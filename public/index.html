@@ -156,11 +156,11 @@
           </div>
         </div>
         <div class="fields">
-          <label>Day <input id="rDay" type="number" min="1" max="31"></label>
+          <label>Day <input id="rDay" type="number" min="1" max="31"><small class="hint" id="hDay"></small></label>
           <label>Date on image <input id="rDate" type="text"></label>
-          <label>Printed total inflow <input id="rTin" type="number" step="0.01"></label>
-          <label>Printed total expenses <input id="rTex" type="number" step="0.01"></label>
-          <label>Printed cash in hand <input id="rCash" type="number" step="0.01"></label>
+          <label>Printed total inflow <input id="rTin" type="number" step="0.01"><small class="hint" id="hTin"></small></label>
+          <label>Printed total expenses <input id="rTex" type="number" step="0.01"><small class="hint" id="hTex"></small></label>
+          <label>Printed cash in hand <input id="rCash" type="number" step="0.01"><small class="hint" id="hCash"></small></label>
         </div>
         <p id="rNotes" class="muted small"></p>
 
@@ -169,6 +169,7 @@
         <h4>Expenses <button class="ghost small" data-add="out">+ line</button></h4>
         <table class="lines" id="outLines"></table>
         <div id="liveSums" class="muted small"></div>
+        <div id="fixList" class="fix-list hidden"></div>
 
         <h4>Checks for this image</h4>
         <ul id="rChecks" class="checks"></ul>

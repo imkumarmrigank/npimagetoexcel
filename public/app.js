@@ -194,8 +194,21 @@ function renderSummary() {
   for (const e of s.entries) if (e.day) (byDay.get(e.day) || byDay.set(e.day, []).get(e.day)).push(e);
   const head = `<thead><tr>${COLS.map(([, h, , g]) => `<th class="${g ? `grp-${g}` : ''}">${h}</th>`).join('')}<th>Status</th></tr></thead>`;
   let body = '';
-  const rowHtml = (e, label) => `<tr data-id="${e.id}" class="${e.errors ? 'err' : ''}">${COLS.map(([c, , k]) => `<td>${c === 'A' ? label : fmt(e.row[k])}</td>`).join('')}
-    <td class="status">${e.source === 'manual' ? badge('skip', 'manual') : ''} ${badge(e.status, e.status === 'verified' ? 'verified' : 'review')} ${e.errors ? badge('error', `${e.errors} mismatch`) : ''} ${e.warnings ? badge('warn', `${e.warnings} warn`) : ''}</td></tr>`;
+  const badCells = (e) => {
+    const bad = new Set();
+    for (const c of e.checks) {
+      if (c.status !== 'error') continue;
+      if (c.id === 'inflow') ['L'].forEach((x) => bad.add(x));
+      if (c.id === 'expense') ['M', 'X'].forEach((x) => bad.add(x));
+      if (c.id === 'cash') bad.add('Y');
+      if (c.id === 'HSD_amt') ['C', 'E'].forEach((x) => bad.add(x));
+      if (c.id === 'MS_amt') ['F', 'H'].forEach((x) => bad.add(x));
+      if (c.id === 'date') bad.add('A');
+    }
+    return bad;
+  };
+  const rowHtml = (e, label) => { const bad = badCells(e); return `<tr data-id="${e.id}" class="${e.errors ? 'err' : ''}" title="${e.errors ? esc(e.checks.filter((c) => c.status === 'error').map((c) => c.label).join('; ')) : ''}">${COLS.map(([c, , k]) => `<td class="${bad.has(c) ? 'cell-bad' : ''}">${c === 'A' ? label : fmt(e.row[k])}</td>`).join('')}
+    <td class="status">${e.source === 'manual' ? badge('skip', 'manual') : ''} ${badge(e.status, e.status === 'verified' ? 'verified' : 'review')} ${e.errors ? badge('error', `${e.errors} mismatch`) : ''} ${e.warnings ? badge('warn', `${e.warnings} warn`) : ''}</td></tr>`; };
   for (let d = 1; d <= s.daysInMonth; d++) {
     const list = byDay.get(d);
     if (!list) body += `<tr class="missing"><td>${d}</td><td colspan="${COLS.length - 1}" style="text-align:left">No image uploaded</td><td class="status">${badge('missing')}</td></tr>`;
@@ -335,8 +348,66 @@ document.querySelectorAll('[data-add]').forEach((b) => b.onclick = () => {
 function liveSums() {
   const sum = (side) => state.entry.lines.filter((l) => l.side === side).reduce((s, l) => s + (Number(l.amount) || 0), 0);
   const i = sum('in'), o = sum('out');
-  $('#liveSums').textContent = `Lines add up to: inflow ${fmt(i) || 0} · expenses ${fmt(o) || 0} · cash in hand ${fmt(i - o) || 0} (Save to re-run the checks)`;
+  $('#liveSums').textContent = `Lines add up to: inflow ${fmt(i) || 0} · expenses ${fmt(o) || 0} · cash in hand ${fmt(i - o) || 0}`;
+  liveCheck(i, o);
 }
+
+// Paint mismatched fields red as the user types, so they can see what to fix.
+const TOL = 1;
+function liveCheck(sumIn, sumOut) {
+  const e = state.entry;
+  const val = (id) => ($(id).value === '' ? null : Number($(id).value));
+  const problems = [];
+  document.querySelectorAll('#review .bad, #review .bad-soft, #review .warn').forEach((el) => el.classList.remove('bad', 'bad-soft', 'warn'));
+  const hint = (id, text, warn) => { $(id).textContent = text || ''; $(id).classList.toggle('warn', !!warn); };
+  const amountInputs = (side) => [...document.querySelectorAll(`#${side}Lines tr[data-lid] input[data-f="amount"]`)];
+  const rowInputs = (id) => [...document.querySelectorAll(`tr[data-lid="${id}"] input`)];
+
+  const day = val('#rDay');
+  const dayBad = !day || (state.summary && state.summary.entries.some((x) => x.id !== e.id && x.day === day));
+  if (dayBad) { $('#rDay').classList.add('bad'); problems.push(!day ? 'Day is missing' : `Another image is also day ${day}`); }
+  hint('#hDay', dayBad ? (!day ? 'Set the day' : 'Duplicate day') : '');
+
+  const cmp = (id, hintId, printed, calc, label, side) => {
+    if (printed === null) { hint(hintId, ''); return; }
+    const diff = Math.round((calc - printed) * 100) / 100;
+    if (Math.abs(diff) <= TOL) { hint(hintId, ''); return; }
+    $(id).classList.add('bad');
+    if (side) amountInputs(side).forEach((el) => el.classList.add('bad-soft'));
+    hint(hintId, `Lines give ${fmt(calc) || '0.00'} (off by ${fmt(diff)})`);
+    problems.push(`${label}: image ${fmt(printed)}, lines ${fmt(calc) || '0.00'}, difference ${fmt(diff)}`);
+  };
+  cmp('#rTin', '#hTin', val('#rTin'), sumIn, 'Total inflow', 'in');
+  cmp('#rTex', '#hTex', val('#rTex'), sumOut, 'Total expenses', 'out');
+  cmp('#rCash', '#hCash', val('#rCash'), sumIn - sumOut, 'Cash in hand');
+
+  // HSD / MS: units × rate must equal the amount on the same row.
+  for (const l of e.lines.filter((x) => x.side === 'in' && (x.col === 'HSD' || x.col === 'MS'))) {
+    const u = Number(l.unit), r = Number(l.rate), a = Number(l.amount);
+    if (!u || !r || !a) continue;
+    const diff = Math.round((u * r - a) * 100) / 100;
+    if (Math.abs(diff) > TOL) {
+      rowInputs(l.id).filter((el) => el.dataset.f !== 'label').forEach((el) => el.classList.add('bad'));
+      problems.push(`${l.label}: ${fmt(u)} × ${fmt(r)} = ${fmt(u * r)}, but amount is ${fmt(a)}`);
+    }
+  }
+
+  // Opening cash vs previous day's closing is a warning, from the server's last check.
+  const ob = e.computed?.checks.find((c) => c.id === 'ob' && c.status === 'warn');
+  const obLine = e.lines.find((l) => l.side === 'in' && l.col === 'OB');
+  if (ob && obLine) {
+    document.querySelector(`tr[data-lid="${obLine.id}"] input[data-f="amount"]`)?.classList.add('warn');
+    problems.push(`Opening cash ${fmt(ob.expected)} ≠ previous day closing ${fmt(ob.actual)} (warning)`);
+  }
+
+  const box = $('#fixList');
+  box.classList.toggle('hidden', !problems.length && !e.computed?.errors);
+  box.classList.toggle('ok', !problems.length);
+  box.innerHTML = problems.length
+    ? `<b>${problems.length} thing(s) to fix</b> — red fields don't add up:<ul>${problems.map((p) => `<li>${esc(p)}</li>`).join('')}</ul>`
+    : '<b>All figures on this image now add up.</b> Save to confirm.';
+}
+for (const id of ['#rTin', '#rTex', '#rCash', '#rDay']) $(id).addEventListener('input', () => liveSums());
 function renderComputed(c) {
   $('#rChecks').innerHTML = c ? c.checks.map(checkLi).join('') : '';
   if (!c) { $('#rRow').innerHTML = ''; return; }
