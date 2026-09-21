@@ -5,6 +5,7 @@ const { pool } = require('./db');
 
 // Each file in db/migrations runs once, in name order.
 async function migrate() {
+  if (!pool) throw new Error('DATABASE_URL is not set. Add it under Environment in Render (your Neon connection string).');
   await pool.query('CREATE TABLE IF NOT EXISTS schema_migrations (name TEXT PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT now())');
   const done = new Set((await pool.query('SELECT name FROM schema_migrations')).rows.map((r) => r.name));
   const dir = path.join(__dirname, '..', 'db', 'migrations');

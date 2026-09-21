@@ -16,6 +16,21 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 
 const PASSWORD = process.env.APP_PASSWORD || '';
 const SECRET = process.env.SESSION_SECRET || 'dev-secret';
 
+// Set when the database can't be reached at start-up; every page then explains why.
+let bootError = null;
+app.get('/healthz', (req, res) => res.json({ ok: !bootError, error: bootError }));
+app.use((req, res, next) => {
+  if (!bootError) return next();
+  if (req.path.startsWith('/api/')) return res.status(503).json({ error: `App not ready: ${bootError}` });
+  res.status(503).type('html').send(`<!doctype html><meta charset="utf-8"><title>Pump Ledger — setup needed</title>
+    <body style="font:16px system-ui;max-width:640px;margin:60px auto;padding:0 16px">
+    <h2>Pump Ledger is running, but can't start yet</h2>
+    <p style="background:#fdecea;color:#b42318;padding:12px;border-radius:8px">${bootError.replace(/[<>&]/g, '')}</p>
+    <p>In Render → this service → <b>Environment</b>, make sure these are set, then redeploy:</p>
+    <ul><li><code>DATABASE_URL</code> — Neon connection string</li><li><code>APP_PASSWORD</code> — login password</li>
+    <li><code>SESSION_SECRET</code> — any long random text</li><li><code>NODE_ENV</code> = <code>production</code></li></ul></body>`);
+});
+
 app.use(express.json({ limit: '2mb' }));
 app.use(cookieParser(SECRET));
 
@@ -322,6 +337,10 @@ app.delete('/api/rules/:id', wrap(async (req, res) => {
 
 app.use(express.static(path.join(__dirname, '..', 'public')));
 
+// Listen first so the host sees a running service, then migrate; a failure is shown on every page.
 const port = process.env.PORT || 3000;
-migrate().then(() => app.listen(port, () => console.log(`Pump ledger on http://localhost:${port}`)))
-  .catch((e) => { console.error(e); process.exit(1); });
+app.listen(port, () => console.log(`Pump ledger on http://localhost:${port}`));
+migrate().catch((e) => {
+  bootError = e.message || String(e);
+  console.error('Start-up failed:', e);
+});
