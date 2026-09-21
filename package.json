@@ -1,0 +1,26 @@
+{
+  "name": "bajrang-ledger",
+  "version": "1.0.0",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "migrate": "node src/migrate.js",
+    "dev": "node --watch src/server.js"
+  },
+  "description": "Daily ledger images to monthly reconciliation sheet",
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.127.0",
+    "cookie-parser": "^1.4.7",
+    "dotenv": "^18.0.1",
+    "exceljs": "^4.4.0",
+    "express": "^5.2.1",
+    "multer": "^2.4.0",
+    "pg": "^8.23.0",
+    "sharp": "^0.35.4",
+    "zod": "^4.6.5"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "private": true
+}

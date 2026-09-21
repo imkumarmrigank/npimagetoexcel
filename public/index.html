@@ -1,0 +1,253 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Pump Ledger</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="mobile-top">
+    <button id="menuBtn" aria-label="Menu">☰</button>
+    <span class="brand">Pump Ledger</span>
+  </header>
+  <div class="layout">
+  <aside class="side" id="side">
+    <div class="brand">Pump Ledger<span>daily sheets → ledger, reports, Excel</span></div>
+    <div class="side-block">
+      <label for="companySelect">Company</label>
+      <select id="companySelect"></select>
+      <div class="side-row">
+        <button id="newCompanyBtn" class="ghost small">+ New</button>
+        <button id="companySettingsBtn" class="ghost small">Edit</button>
+      </div>
+    </div>
+    <nav class="menu" id="tabs">
+      <button data-tab="sheet" class="active"><span>▦</span>Monthly sheet</button>
+      <button data-tab="reports"><span>₹</span>Reports &amp; P&amp;L</button>
+      <button data-tab="ledger"><span>≡</span>Ledger</button>
+      <button id="rulesBtn"><span>⇄</span>Mapping rules</button>
+    </nav>
+    <div class="side-foot"><button id="logoutBtn" class="ghost small hidden">Sign out</button></div>
+  </aside>
+  <div class="side-shade" id="sideShade"></div>
+
+  <main id="app">
+    <section id="noCompany" class="card hidden">
+      <h2>Create your first company</h2>
+      <p>Each company (petrol pump) keeps its own months, images, mapping rules and Excel.</p>
+      <button class="primary" onclick="openCompany()">Create company</button>
+    </section>
+    <section id="empty" class="card hidden">
+      <h2>Create the first month for <span id="emptyCompany"></span></h2>
+      <p>Start a month (for example September 2026), then upload the daily report images.</p>
+      <button class="primary" onclick="openNewMonth()">Create month</button>
+    </section>
+
+    <section id="monthBar" class="bar hidden">
+      <select id="monthSelect" aria-label="Month"></select>
+      <button id="newMonthBtn">+ Month</button>
+      <button id="monthSettingsBtn">Month settings</button>
+      <span class="spacer"></span>
+      <a id="exportBtn" class="btn primary" href="#">Download month Excel</a>
+    </section>
+
+    <section id="dashboard" class="hidden">
+      <div class="grid-2">
+        <div class="card">
+          <h3>Upload daily images</h3>
+          <label id="drop" class="drop">
+            <input id="fileInput" type="file" accept="image/*" multiple hidden>
+            <strong>Drop images here</strong> or click to choose. You can select many at once.
+          </label>
+          <ul id="queue" class="queue"></ul>
+          <div class="manual">
+            <span class="muted">No image?</span>
+            <input id="manualDay" type="number" min="1" max="31" placeholder="Day" style="width:80px">
+            <button id="manualBtn">Add day manually</button>
+          </div>
+        </div>
+        <div class="card">
+          <h3>Month validation</h3>
+          <ul id="monthChecks" class="checks"></ul>
+          <div id="totalsStrip" class="totals"></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="row-between">
+          <h3 id="sheetTitle">Sheet</h3>
+          <span class="muted">Click a day to review it against its image</span>
+        </div>
+        <div class="table-wrap">
+          <table id="sheet" class="sheet"></table>
+        </div>
+      </div>
+    </section>
+    <section id="reportsView" class="hidden">
+      <div class="card">
+        <form id="reportForm" class="fields">
+          <label>Company <select name="company_id" id="repCompany"></select></label>
+          <label>From <input name="from" type="date"></label>
+          <label>To <input name="to" type="date"></label>
+          <label>Group by
+            <select name="group">
+              <option value="day">Day</option><option value="month" selected>Month</option><option value="quarter">Quarter</option>
+              <option value="half">Half-year</option><option value="year">Year</option>
+            </select>
+          </label>
+          <label>Year type
+            <select name="fy"><option value="1">Financial (Apr–Mar)</option><option value="0">Calendar (Jan–Dec)</option></select>
+          </label>
+          <div class="quick">
+            <button type="button" data-range="month">This month</button>
+            <button type="button" data-range="quarter">This quarter</button>
+            <button type="button" data-range="half">This half</button>
+            <button type="button" data-range="fy">This FY</button>
+            <button type="button" data-range="all">All time</button>
+          </div>
+          <button class="primary">Show</button>
+          <a id="reportXlsx" class="btn" href="#">Download Excel</a>
+        </form>
+      </div>
+      <div id="reportOut"></div>
+    </section>
+
+    <section id="ledgerView" class="hidden">
+      <div class="card">
+        <form id="ledgerForm" class="fields">
+          <label>Company <select name="company_id" id="ledCompany"></select></label>
+          <label>From <input name="from" type="date"></label>
+          <label>To <input name="to" type="date"></label>
+          <label>Side <select name="side"><option value="">Inflow + expenses</option><option value="in">Inflow only</option><option value="out">Expenses only</option></select></label>
+          <label>Column <select name="col" id="ledCol"></select></label>
+          <label>Search particulars <input name="q" placeholder="e.g. RANJIT, KHORAKI"></label>
+          <button class="primary">Show</button>
+          <a id="ledgerXlsx" class="btn" href="#">Download Excel</a>
+        </form>
+      </div>
+      <div class="card">
+        <div id="ledgerSum" class="totals"></div>
+        <div class="table-wrap"><table id="ledgerTable" class="sheet"></table></div>
+      </div>
+    </section>
+  </main>
+  </div>
+
+  <!-- Review one image -->
+  <dialog id="review" class="wide">
+    <div class="review">
+      <div class="review-img">
+        <div class="img-tools">
+          <button class="ghost small" data-zoom="-1">−</button>
+          <button class="ghost small" data-zoom="0">Fit</button>
+          <button class="ghost small" data-zoom="1">+</button>
+          <a id="imgOpen" class="small" target="_blank">Open full size</a>
+        </div>
+        <div id="imgBox" class="img-box"><img id="reviewImg" alt="Uploaded report"><p id="noImg" class="no-img hidden">Entered by hand — no image.<br>Type the figures on the right, then save.</p></div>
+      </div>
+      <div class="review-data">
+        <div class="row-between">
+          <h3 id="reviewTitle">Review</h3>
+          <div>
+            <button class="ghost small" id="prevDay">◀ Prev</button>
+            <button class="ghost small" id="nextDay">Next ▶</button>
+            <button class="ghost small" onclick="review.close()">✕</button>
+          </div>
+        </div>
+        <div class="fields">
+          <label>Day <input id="rDay" type="number" min="1" max="31"></label>
+          <label>Date on image <input id="rDate" type="text"></label>
+          <label>Printed total inflow <input id="rTin" type="number" step="0.01"></label>
+          <label>Printed total expenses <input id="rTex" type="number" step="0.01"></label>
+          <label>Printed cash in hand <input id="rCash" type="number" step="0.01"></label>
+        </div>
+        <p id="rNotes" class="muted small"></p>
+
+        <h4>Inflow <button class="ghost small" data-add="in">+ line</button></h4>
+        <table class="lines" id="inLines"></table>
+        <h4>Expenses <button class="ghost small" data-add="out">+ line</button></h4>
+        <table class="lines" id="outLines"></table>
+        <div id="liveSums" class="muted small"></div>
+
+        <h4>Checks for this image</h4>
+        <ul id="rChecks" class="checks"></ul>
+        <h4>Goes into the sheet as</h4>
+        <div id="rRow" class="mapped"></div>
+
+        <div class="review-actions">
+          <button class="danger ghost" id="rDelete">Delete image</button>
+          <button class="ghost" id="rReextract">Re-read image</button>
+          <button class="ghost" id="rReclass">Re-apply rules</button>
+          <span class="spacer"></span>
+          <button id="rSave">Save</button>
+          <button class="primary" id="rVerify">Save &amp; mark verified</button>
+        </div>
+      </div>
+    </div>
+  </dialog>
+
+  <dialog id="monthDlg">
+    <form method="dialog" id="monthForm" class="form">
+      <h3 id="monthDlgTitle">New month</h3>
+      <label>Sheet title <input name="title" required placeholder="Bajrang Petroleum-Sept-26"></label>
+      <div class="fields">
+        <label>Year <input name="year" type="number" required></label>
+        <label>Month <input name="month" type="number" min="1" max="12" required></label>
+        <label>HSD rate <input name="hsd_rate" type="number" step="0.01" placeholder="99.76"></label>
+        <label>MS rate <input name="ms_rate" type="number" step="0.01" placeholder="113.77"></label>
+        <label class="only-edit">HSD purchase cost / ltr (for P&amp;L) <input name="hsd_cost" type="number" step="0.01"></label>
+        <label class="only-edit">MS purchase cost / ltr (for P&amp;L) <input name="ms_cost" type="number" step="0.01"></label>
+        <label class="only-edit">Totals-row OB (cell B35) <input name="total_ob" type="number" step="0.01" placeholder="defaults to day 1 OB"></label>
+      </div>
+      <div class="review-actions">
+        <button type="button" class="danger ghost only-edit" id="deleteMonth">Delete month</button>
+        <span class="spacer"></span>
+        <button type="button" onclick="monthDlg.close()">Cancel</button>
+        <button class="primary" type="submit">Save</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="companyDlg">
+    <form id="companyForm" class="form">
+      <h3 id="companyDlgTitle">New company</h3>
+      <label>Company name <input name="name" required placeholder="Bajrang Petroleum Sonho"></label>
+      <p class="muted small only-edit">Deleting a company deletes all its months and images.</p>
+      <div class="review-actions">
+        <button type="button" class="danger ghost only-edit" id="deleteCompany">Delete company</button>
+        <span class="spacer"></span>
+        <button type="button" onclick="companyDlg.close()">Cancel</button>
+        <button class="primary" type="submit">Save</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="rulesDlg" class="wide">
+    <div class="form">
+      <div class="row-between"><h3>Mapping rules — <span id="rulesCompany"></span></h3><button class="ghost small" onclick="rulesDlg.close()">✕</button></div>
+      <p class="muted">Each line on an image is matched against these patterns (case-insensitive, lowest priority number first). Unmatched inflow lines go to <b>Collection</b>, unmatched expenses to <b>P-Exp</b>. Existing images keep their columns until you press “Re-apply rules”.</p>
+      <table class="lines" id="rulesTable"></table>
+      <form id="ruleForm" class="fields">
+        <label>Side <select name="side"><option value="out">Expense</option><option value="in">Inflow</option></select></label>
+        <label>Pattern (regex) <input name="pattern" required placeholder="GUARD|SALARY"></label>
+        <label>Column <select name="col" id="ruleCol"></select></label>
+        <label>Priority <input name="priority" type="number" value="45"></label>
+        <button class="primary">Add rule</button>
+      </form>
+    </div>
+  </dialog>
+
+  <dialog id="loginDlg">
+    <form id="loginForm" class="form">
+      <h3>Pump Ledger</h3>
+      <label>Password <input name="password" type="password" required autofocus></label>
+      <p id="loginErr" class="err"></p>
+      <button class="primary">Sign in</button>
+    </form>
+  </dialog>
+
+  <div id="toast" class="toast"></div>
+  <script src="app.js"></script>
+</body>
+</html>
