@@ -31,7 +31,7 @@ async function loadCompanies(selectId) {
   const opts = `<option value="">All companies</option>` + state.companies.map((c) => `<option value="${c.id}">${esc(c.name)}</option>`).join('');
   for (const id of ['#repCompany', '#ledCompany']) { $(id).innerHTML = opts; $(id).value = state.companyId || ''; }
   if (!has) {
-    for (const id of ['#empty', '#dashboard', '#monthBar', '#reportsView', '#ledgerView']) $(id).classList.add('hidden');
+    for (const id of ['#empty', '#dashboard', '#monthBar', '#reportsView', '#ledgerView', '#cashView']) $(id).classList.add('hidden');
     return;
   }
   sel.value = state.companyId;
@@ -49,6 +49,8 @@ function showTab(tab) {
   $('#empty').classList.toggle('hidden', !sheet || !!state.monthId);
   $('#dashboard').classList.toggle('hidden', !sheet || !state.monthId);
   $('#reportsView').classList.toggle('hidden', tab !== 'reports');
+  $('#cashView').classList.toggle('hidden', tab !== 'cash');
+  if (tab === 'cash' && !state.cashLoaded) { state.cashLoaded = true; if (!$('#cashForm').from.value) setRange($('#cashForm'), 'month'); runCash(); }
   $('#ledgerView').classList.toggle('hidden', tab !== 'ledger');
   $('#side').classList.remove('open');
   if (tab === 'reports' && !state.reportLoaded) { state.reportLoaded = true; setRange($('#reportForm'), 'fy'); runReport(); }
@@ -58,7 +60,12 @@ document.querySelectorAll('#tabs [data-tab]').forEach((b) => { b.onclick = () =>
 $('#menuBtn').onclick = () => $('#side').classList.toggle('open');
 $('#sideShade').onclick = () => $('#side').classList.remove('open');
 $('#logoutBtn').onclick = async () => { await api('/api/logout', { method: 'POST' }); location.reload(); };
-$('#companySelect').onchange = (e) => { state.companyId = Number(e.target.value); state.monthId = null; loadCompanies(state.companyId); };
+$('#companySelect').onchange = (e) => {
+  state.companyId = Number(e.target.value);
+  state.monthId = null;
+  state.cashLoaded = state.reportLoaded = state.ledgerLoaded = false; // other views follow the new company
+  loadCompanies(state.companyId);
+};
 
 function openCompany(edit) {
   const f = $('#companyForm');
@@ -107,7 +114,7 @@ async function loadMonths(selectId) {
 async function loadSummary() {
   localStorage.setItem(`monthId:${state.companyId}`, state.monthId);
   state.summary = await api(`/api/months/${state.monthId}/summary`);
-  state.reportLoaded = state.ledgerLoaded = false; // figures changed; refresh those views on next visit
+  state.reportLoaded = state.ledgerLoaded = state.cashLoaded = false; // figures changed; refresh those views on next visit
   $('#exportBtn').href = `/api/months/${state.monthId}/export.xlsx`;
   renderSummary();
 }
@@ -544,6 +551,8 @@ function setRange(form, kind) {
   const y = now.getFullYear(), mo = now.getMonth();
   const fyStart = mo >= 3 ? y : y - 1;
   let from, to;
+  if (kind === 'today') { from = to = new Date(); }
+  if (kind === 'week') { const t = new Date(); from = new Date(t.getFullYear(), t.getMonth(), t.getDate() - ((t.getDay() + 6) % 7)); to = new Date(from.getFullYear(), from.getMonth(), from.getDate() + 6); }
   if (kind === 'month') { from = new Date(y, mo, 1); to = new Date(y, mo + 1, 0); }
   if (kind === 'quarter') { const q = Math.floor(((mo - 3 + 12) % 12) / 3); from = new Date(fyStart, 3 + q * 3, 1); to = new Date(fyStart, 6 + q * 3, 0); }
   if (kind === 'half') { const h = ((mo - 3 + 12) % 12) < 6 ? 0 : 1; from = new Date(fyStart, 3 + h * 6, 1); to = new Date(fyStart, 9 + h * 6, 0); }
@@ -630,4 +639,53 @@ async function runLedger() {
         || `<tr><td colspan="8" class="muted" style="text-align:center">No entries</td></tr>`}</tbody>`;
     $('#ledgerTable').querySelectorAll('tr[data-eid]').forEach((tr) => { tr.onclick = () => openReview(Number(tr.dataset.eid)); });
   } catch (e) { toast(e.message); }
+}
+
+// ---------- deposits & expenses (always the company chosen in the sidebar) ----------
+$('#cashForm').addEventListener('submit', (ev) => { ev.preventDefault(); runCash(); });
+$('#cashForm').querySelectorAll('[data-range]').forEach((b) => { b.onclick = () => { setRange($('#cashForm'), b.dataset.range); runCash(); }; });
+
+async function runCash() {
+  const form = $('#cashForm');
+  $('#cashCompany').textContent = company()?.name || '';
+  const q = `company_id=${state.companyId}&${qs(form)}`;
+  $('#cashXlsx').href = `/api/cashflow/export.xlsx?${q}`;
+  $('#cashOut').innerHTML = '<div class="card muted">Loading…</div>';
+  try {
+    const r = await api(`/api/reports?${q}`);
+    const t = r.total;
+    if (!r.rows.length) { $('#cashOut').innerHTML = '<div class="card muted">No days entered in this range yet.</div>'; return; }
+    const P = r.rows;
+    const head = (name) => `<thead><tr><th>${name}</th>${P.map((p) => `<th>${esc(p.label)}</th>`).join('')}<th>Total</th></tr></thead>`;
+    const line = (label, get, cls = '', attrs = '') => `<tr class="${cls}" ${attrs}><td>${label}</td>${P.map((p) => `<td>${fmt(get(p)) || '–'}</td>`).join('')}<td><b>${fmt(get(t)) || '–'}</b></td></tr>`;
+    const table = (title, name, rows) => `<div class="card"><h3>${title}</h3><div class="table-wrap"><table class="pl">${head(name)}<tbody>${rows}</tbody></table></div></div>`;
+
+    const tiles = [['Total deposits', t.cash.deposits], ['Bank', t.BANK], ['PTM (Paytm)', t.PTM], ['UPI', t.UPI],
+      ['Party payments', t.cash.parties], ['Operating expenses', t.PEXP], ['Total paid out (T-Exp)', t.M], ['Days', t.days, 0]]
+      .map(([k, v, d]) => `<div><span>${k}</span><b>${d === 0 ? v : money(v)}</b></div>`).join('');
+
+    const deposits = table('Deposits', 'Deposit', [
+      line('Bank', (x) => x.BANK), line('PTM (Paytm)', (x) => x.PTM), line('UPI', (x) => x.UPI), line('Total deposits', (x) => x.cash.deposits, 'sub'),
+    ].join(''));
+    const parties = table('Party payments', 'Party', [
+      line('T-Sale', (x) => x.TSALE), line('Fleet', (x) => x.FLEET), line('R-Babu', (x) => x.RBABU), line('Ranjit', (x) => x.RANJIT),
+      line('Others', (x) => x.OTHERS), line('Total party payments', (x) => x.cash.parties, 'sub'),
+    ].join(''));
+    const heads = t.pl.expenseLines.map((e) => e.label);
+    const amt = (x, h) => x.pl.expenseLines.find((e) => e.label === h)?.amount;
+    const expenses = table('Operating expenses by head <span class="muted small">(click a head to see every entry in the Ledger)</span>', 'Expense head', [
+      ...heads.map((h) => line(esc(h), (x) => (x === t ? t.pl.expenseLines.find((e) => e.label === h).amount : amt(x, h)), 'clickable', `data-head="${esc(h)}"`)),
+      line('Total operating expenses', (x) => x.PEXP, 'sub'),
+    ].join(''));
+
+    $('#cashOut').innerHTML = `<div class="card"><div class="muted small">${esc(r.from || '')} to ${esc(r.to || '')}</div><div class="totals">${tiles}</div></div>${deposits}${parties}${expenses}`;
+    $('#cashOut').querySelectorAll('[data-head]').forEach((tr) => {
+      tr.onclick = () => {
+        const lf = $('#ledgerForm');
+        lf.company_id.value = state.companyId; lf.from.value = form.from.value; lf.to.value = form.to.value;
+        lf.side.value = 'out'; lf.col.value = 'PEXP'; lf.q.value = tr.dataset.head;
+        state.ledgerLoaded = true; showTab('ledger'); runLedger();
+      };
+    });
+  } catch (e) { $('#cashOut').innerHTML = `<div class="card err">${esc(e.message)}</div>`; }
 }

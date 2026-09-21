@@ -148,3 +148,5 @@ input.warn { background: var(--warn-bg); border-color: #e3b341; }
 .pl tr.net td { font-weight: 700; border-top: 2px solid var(--ink); }
 .neg { color: var(--err); }
 .note { background: var(--warn-bg); color: var(--warn); padding: 8px 12px; border-radius: 8px; margin: 8px 0; font-size: 13px; }
+.pl tr.clickable { cursor: pointer; }
+.pl tr.clickable:hover td { background: var(--row-hover); }

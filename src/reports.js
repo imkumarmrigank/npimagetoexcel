@@ -12,6 +12,13 @@ function periodOf(y, m, d, group, fy) {
   const yLabel = fy ? `FY ${fyStart}-${String(fyStart + 1).slice(2)}` : String(y);
   switch (group) {
     case 'day': return { key: iso(y, m, d), label: `${pad(d)}-${pad(m)}-${y}` };
+    case 'week': { // Monday to Sunday
+      const start = new Date(Date.UTC(y, m - 1, d));
+      start.setUTCDate(start.getUTCDate() - ((start.getUTCDay() + 6) % 7));
+      const end = new Date(start); end.setUTCDate(end.getUTCDate() + 6);
+      const f = (t) => `${pad(t.getUTCDate())}-${pad(t.getUTCMonth() + 1)}`;
+      return { key: start.toISOString().slice(0, 10), label: `${f(start)} to ${f(end)}-${end.getUTCFullYear()}` };
+    }
     case 'month': return { key: `${y}-${pad(m)}`, label: new Date(y, m - 1, 1).toLocaleString('en-IN', { month: 'short', year: 'numeric' }) };
     case 'quarter': { const q = Math.floor(pos / 3) + 1; return { key: `${fyStart}-Q${q}`, label: `Q${q} ${yLabel}` }; }
     case 'half': { const h = pos < 6 ? 1 : 2; return { key: `${fyStart}-H${h}`, label: `H${h} ${yLabel}` }; }

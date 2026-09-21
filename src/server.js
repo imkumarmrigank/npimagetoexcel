@@ -9,7 +9,7 @@ const { migrate } = require('./migrate');
 const { compileRules, classifyLines, INFLOW_COLS, EXPENSE_COLS, DEFAULT_RULES } = require('./columns');
 const { buildMonth } = require('./reconcile');
 const { extractLedger, toEntry } = require('./extract');
-const { buildWorkbook, buildReportWorkbook, buildLedgerWorkbook } = require('./excel');
+const { buildWorkbook, buildReportWorkbook, buildLedgerWorkbook, buildCashflowWorkbook } = require('./excel');
 const { report, ledger } = require('./reports');
 
 const app = express();
@@ -202,7 +202,7 @@ function reportParams(q) {
     companyId: q.company_id ? Number(q.company_id) : null,
     from: date(q.from),
     to: date(q.to),
-    group: ['day', 'month', 'quarter', 'half', 'year'].includes(q.group) ? q.group : 'month',
+    group: ['day', 'week', 'month', 'quarter', 'half', 'year'].includes(q.group) ? q.group : 'month',
     fy: q.fy !== '0',
     col: q.col || null,
     side: q.side === 'in' || q.side === 'out' ? q.side : null,
@@ -219,6 +219,11 @@ const sendXlsx = (res, name, buf) => {
   res.send(Buffer.from(buf));
 };
 app.get('/api/reports', wrap(async (req, res) => res.json(await report(reportParams(req.query)))));
+app.get('/api/cashflow/export.xlsx', wrap(async (req, res) => {
+  const p = reportParams(req.query);
+  const title = await reportTitle(p, `Deposits & expenses (${p.group}-wise)`);
+  sendXlsx(res, title, await buildCashflowWorkbook(title, await report(p)));
+}));
 app.get('/api/reports/export.xlsx', wrap(async (req, res) => {
   const p = reportParams(req.query);
   const title = await reportTitle(p, `${p.group}-wise report`);

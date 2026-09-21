@@ -24,6 +24,7 @@
     </div>
     <nav class="menu" id="tabs">
       <button data-tab="sheet" class="active"><span>▦</span>Monthly sheet</button>
+      <button data-tab="cash"><span>⇩</span>Deposits &amp; Expenses</button>
       <button data-tab="reports"><span>₹</span>Reports &amp; P&amp;L</button>
       <button data-tab="ledger"><span>≡</span>Ledger</button>
       <button id="rulesBtn"><span>⇄</span>Mapping rules</button>
@@ -84,6 +85,36 @@
         </div>
       </div>
     </section>
+    <section id="cashView" class="hidden">
+      <div class="card">
+        <div class="row-between"><h3>Deposits &amp; Expenses — <span id="cashCompany"></span></h3></div>
+        <form id="cashForm" class="fields">
+          <label>From <input name="from" type="date"></label>
+          <label>To <input name="to" type="date"></label>
+          <label>Show
+            <select name="group">
+              <option value="day">Daily</option><option value="week">Weekly</option><option value="month" selected>Monthly</option>
+              <option value="quarter">Quarterly</option><option value="half">Half-yearly</option><option value="year">Yearly</option>
+            </select>
+          </label>
+          <label>Year type
+            <select name="fy"><option value="1">Financial (Apr–Mar)</option><option value="0">Calendar (Jan–Dec)</option></select>
+          </label>
+          <div class="quick">
+            <button type="button" data-range="today">Today</button>
+            <button type="button" data-range="week">This week</button>
+            <button type="button" data-range="month">This month</button>
+            <button type="button" data-range="quarter">This quarter</button>
+            <button type="button" data-range="fy">This FY</button>
+            <button type="button" data-range="all">All time</button>
+          </div>
+          <button class="primary">Show</button>
+          <a id="cashXlsx" class="btn" href="#">Download Excel</a>
+        </form>
+      </div>
+      <div id="cashOut"></div>
+    </section>
+
     <section id="reportsView" class="hidden">
       <div class="card">
         <form id="reportForm" class="fields">

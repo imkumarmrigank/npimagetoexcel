@@ -109,3 +109,26 @@ async function buildLedgerWorkbook(title, led) {
 
 module.exports.buildReportWorkbook = buildReportWorkbook;
 module.exports.buildLedgerWorkbook = buildLedgerWorkbook;
+
+// Deposits (Bank/PTM/UPI), party payments and operating expenses by head, one column per period.
+async function buildCashflowWorkbook(title, rep) {
+  const wb = new ExcelJS.Workbook();
+  const ws = wb.addWorksheet('Deposits & Expenses');
+  ws.addRow([title]).font = { bold: true, size: 13 };
+  ws.addRow([`${rep.from || ''} to ${rep.to || ''}`]);
+  const periods = rep.rows;
+  const section = (name, items) => {
+    ws.addRow([]);
+    styleHeader(ws.addRow([name, ...periods.map((p) => p.label), 'Total']));
+    for (const [label, get] of items) ws.addRow([label, ...periods.map((p) => get(p) || null), get(rep.total) || null]);
+  };
+  section('Deposits', [['Bank', (r) => r.BANK], ['PTM (Paytm)', (r) => r.PTM], ['UPI', (r) => r.UPI], ['Total deposits', (r) => r.cash.deposits]]);
+  section('Party payments', [['T-Sale', (r) => r.TSALE], ['Fleet', (r) => r.FLEET], ['R-Babu', (r) => r.RBABU], ['Ranjit', (r) => r.RANJIT], ['Others', (r) => r.OTHERS], ['Total party payments', (r) => r.cash.parties]]);
+  const heads = rep.total.pl.expenseLines.map((e) => e.label);
+  const amt = (r, h) => r.pl.expenseLines.find((e) => e.label === h)?.amount;
+  section('Operating expenses (P-Exp)', [...heads.map((h) => [h, (r) => amt(r, h)]), ['Total operating expenses', (r) => r.PEXP]]);
+  ws.eachRow((row) => { if (/^Total/.test(String(row.getCell(1).value))) row.font = { bold: true }; });
+  ws.columns.forEach((c, i) => { c.width = i === 0 ? 34 : 15; if (i > 0) c.numFmt = '#,##0.00'; });
+  return wb.xlsx.writeBuffer();
+}
+module.exports.buildCashflowWorkbook = buildCashflowWorkbook;
