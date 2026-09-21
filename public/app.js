@@ -869,7 +869,6 @@ async function runCash() {
   } catch (e) { $('#cashOut').innerHTML = `<div class="card err">${esc(e.message)}</div>`; }
 }
 
-boot();
 
 // ---------- cash reconciliation (month-end summary, any date range) ----------
 const RF = () => $('#reconForm');
@@ -1071,3 +1070,211 @@ async function renderCostEditor(companyId, from, to) {
     };
   });
 }
+
+// ---------- errors: everything open, grouped, with why and how to fix ----------
+const ERR_GROUPS = [
+  { id: 'totals', title: 'Totals don’t add up', note: 'The rows typed for a day don’t match the totals printed on its image.', match: (c) => ['inflow', 'expense', 'cash'].includes(c.id) },
+  { id: 'fuel', title: 'HSD / MS units × rate', note: 'A fuel row’s units × rate is not its amount.', match: (c) => c.id === 'HSD_amt' || c.id === 'MS_amt' },
+  { id: 'opening', title: 'Opening cash differences', note: 'A day opens with different cash than the previous day ended with.', match: (c) => c.id === 'ob' },
+  { id: 'dates', title: 'Dates', note: 'Missing days, days without a date, or two entries on one date.', match: (c) => c.id === 'date' },
+];
+$('#errForm').addEventListener('submit', (ev) => { ev.preventDefault(); runErrors(); });
+$('#errForm').querySelectorAll('[data-range]').forEach((b) => { b.onclick = () => { setRange($('#errForm'), b.dataset.range); runErrors(); }; });
+
+async function refreshErrCount() {
+  if (!state.companyId) return;
+  try {
+    const r = await api(`/api/issues?company_id=${state.companyId}`);
+    const n = r.checks.filter((x) => x.check.status === 'error').length + r.undated.length;
+    $('#errCount').textContent = n;
+    $('#errCount').classList.toggle('hidden', !n);
+  } catch { /* the count is a convenience */ }
+}
+
+async function runErrors() {
+  const f = $('#errForm');
+  $('#errCompany').textContent = company()?.name || '';
+  $('#errOut').innerHTML = '<div class="card muted">Checking…</div>';
+  try {
+    const r = await api(`/api/issues?company_id=${state.companyId}&from=${f.from.value}&to=${f.to.value}`);
+    const dmy = (v) => v.split('-').reverse().join('-');
+    const item = (x) => {
+      const ex = explain(x.check, { lines: x.lines, computed: { checks: x.checks } }) || { why: x.check.detail || x.check.label, fix: '' };
+      const accept = x.check.id === 'ob' && !x.locked ? `<button class="small" data-accept="${x.entryId}" data-diff="${x.check.diff}">Accept difference of ${fmt(-x.check.diff) || '0.00'}</button>` : '';
+      return `<div class="fix-item ${x.check.status}">
+        <div class="fix-title">${badge(x.check.status)} ${esc(dmy(x.date))} · ${esc(x.check.label)}</div>
+        <div><b>Why:</b> ${esc(ex.why)}</div>
+        <div><b>How to fix:</b> ${esc(ex.fix)}</div>
+        ${ex.clues?.length ? `<ul>${ex.clues.map((k) => `<li>${esc(k)}</li>`).join('')}</ul>` : ''}
+        <div class="err-actions"><button class="small primary" data-openid="${x.entryId}">Open this day</button>${accept}${x.locked ? '<span class="muted small">sent to Tally — locked</span>' : ''}</div>
+      </div>`;
+    };
+    let html = '';
+    let total = 0;
+    for (const g of ERR_GROUPS) {
+      const list = r.checks.filter((x) => g.match(x.check));
+      let extra = '';
+      if (g.id === 'dates') {
+        extra += r.undated.map((u) => `<div class="fix-item error"><div class="fix-title">${badge('error')} Image without a date${u.image ? ` (${esc(u.image)})` : ''}</div>
+          <div><b>Why:</b> the image was saved without a day, so it is not in any sheet or report.</div>
+          <div><b>How to fix:</b> open it and set the Day printed on the image.</div>
+          <div class="err-actions"><button class="small primary" data-openid="${u.entryId}">Open</button></div></div>`).join('');
+        if (r.missing.length) {
+          extra += `<div class="fix-item warn"><div class="fix-title">${badge('warn')} ${r.missing.length} day(s) with no entry</div>
+            <div><b>Why:</b> nothing has been uploaded or typed for these dates, so the month is incomplete and totals are short.</div>
+            <div><b>How to fix:</b> upload the day’s image, or click a date to type it in by hand.</div>
+            <div class="err-actions">${r.missing.map((m) => `<button class="small" data-missing="${m.date}">${esc(dmy(m.date))}</button>`).join(' ')}</div></div>`;
+        }
+      }
+      const count = list.length + (g.id === 'dates' ? r.undated.length + (r.missing.length ? 1 : 0) : 0);
+      total += count;
+      html += `<div class="card err-group"><div class="row-between"><h3>${esc(g.title)} ${count ? `<span class="badge b-${list.some((x) => x.check.status === 'error') || (g.id === 'dates' && r.undated.length) ? 'error' : 'warn'}">${count}</span>` : '<span class="badge b-ok">none</span>'}</h3>
+        <span class="muted small">${esc(g.note)}</span></div>
+        <div class="err-list">${list.map(item).join('')}${extra}${count ? '' : '<div class="muted">Nothing to fix here.</div>'}</div></div>`;
+    }
+    const unv = r.unverified;
+    html += `<div class="card err-group"><div class="row-between"><h3>Waiting for review ${unv.length ? `<span class="badge b-review">${unv.length}</span>` : '<span class="badge b-ok">none</span>'}</h3>
+      <span class="muted small">Days not yet marked verified. Only verified days go to Tally.</span></div>
+      ${unv.length ? `<div class="fix-item warn"><div><b>Why:</b> these days have not been checked against their image.</div>
+      <div><b>How to fix:</b> open each day, compare it with its image, fix anything red, then press “Save &amp; mark verified”.</div>
+      <div class="err-actions">${unv.map((u) => `<button class="small" data-openid="${u.entryId}">${esc(dmy(u.date))}${u.errors ? ' ⚠' : ''}</button>`).join(' ')}</div></div>` : '<div class="muted">All days are verified.</div>'}</div>`;
+    $('#errOut').innerHTML = (total ? '' : '<div class="card fix-list ok"><b>No errors in this range.</b></div>') + html;
+    $('#errOut').querySelectorAll('[data-openid]').forEach((b) => { b.onclick = () => openReview(Number(b.dataset.openid)); });
+    $('#errOut').querySelectorAll('[data-missing]').forEach((b) => { b.onclick = () => enterManually(b.dataset.missing); });
+    $('#errOut').querySelectorAll('[data-accept]').forEach((b) => {
+      b.onclick = async () => {
+        try { await api(`/api/entries/${b.dataset.accept}/accept-ob`, { method: 'POST', body: { diff: Number(b.dataset.diff) } }); toast('Difference accepted'); if (state.monthId) await loadSummary(); runErrors(); } catch (e) { toast(e.message); }
+      };
+    });
+  } catch (e) { $('#errOut').innerHTML = `<div class="card err">${esc(e.message)}</div>`; }
+}
+// The Errors list refreshes when the review form closes, so fixed items vanish at once.
+$('#review').addEventListener('close', () => { if (state.tab === 'errors') runErrors(); refreshErrCount(); });
+
+// ---------- Tally export ----------
+const VOUCHER_TYPES = ['Sales', 'Receipt', 'Payment', 'Contra', 'Journal'];
+async function openTally() {
+  $('#tallyCompany').textContent = company()?.name || '';
+  const f = $('#tallyForm');
+  if (!f.from.value) setRange(f, 'month');
+  try {
+    state.tally = await api(`/api/tally/${state.companyId}/settings`);
+    renderTallySettings();
+    renderBatches();
+    $('#tallyPreview').innerHTML = '';
+  } catch (e) { toast(e.message); }
+}
+
+function renderTallySettings() {
+  const t = state.tally;
+  $('#tplInfo').innerHTML = t.has_template
+    ? `Using <b>${esc(t.template_name)}</b> (sheet “${esc(t.sheet)}”, headings on row ${t.header_row}). Match each column of your template to what should go in it:`
+    : 'No template uploaded — the file will use a simple layout: Date, Voucher Type, Voucher No, Debit Ledger, Credit Ledger, Amount, Quantity, Rate, Narration. Upload your Tally import Excel to use its columns instead.';
+  $('#tplRemove').classList.toggle('hidden', !t.has_template);
+  const opts = (sel) => `<option value="">— leave empty —</option>` + Object.entries(t.fields).map(([k, v]) => `<option value="${k}" ${k === sel ? 'selected' : ''}>${esc(v)}</option>`).join('');
+  $('#tplMap').innerHTML = t.has_template ? `<table class="pl" style="max-width:640px"><thead><tr><th>Template column</th><th>Heading</th><th>Fill with</th></tr></thead><tbody>
+    ${t.headers.map((h) => `<tr><td>${esc(h.letter)}</td><td>${esc(h.text)}</td><td><select data-tplcol="${esc(h.letter)}">${opts(t.columns[h.letter])}</select></td></tr>`).join('')}</tbody></table>
+    <p class="muted small">If your template has one “Ledger” column with “Dr/Cr”, each voucher is written as two rows (debit, then credit).</p>` : '';
+  $('#cashLedger').value = t.cash_ledger || 'Cash';
+  const cols = [...state.meta.inflowCols.filter((c) => c.key !== 'OB'), ...state.meta.expenseCols];
+  $('#ledgerMap').innerHTML = `<table class="pl" style="max-width:760px"><thead><tr><th>Sheet column</th><th>Tally ledger</th><th>Voucher type</th></tr></thead><tbody>
+    ${cols.map((c) => { const l = t.ledgers[c.key] || {}; return `<tr data-lcol="${c.key}"><td>${esc(c.label)}</td>
+      <td><input name="ledger" value="${esc(l.ledger || '')}" placeholder="use the particulars as ledger"></td>
+      <td><select name="voucher">${VOUCHER_TYPES.map((v) => `<option ${v === l.voucher ? 'selected' : ''}>${v}</option>`).join('')}</select></td></tr>`; }).join('')}</tbody></table>`;
+}
+
+function collectTallySettings() {
+  const columns = {};
+  document.querySelectorAll('[data-tplcol]').forEach((s2) => { columns[s2.dataset.tplcol] = s2.value; });
+  const ledgers = {};
+  document.querySelectorAll('[data-lcol]').forEach((tr) => { ledgers[tr.dataset.lcol] = { ledger: tr.querySelector('[name=ledger]').value.trim(), voucher: tr.querySelector('[name=voucher]').value }; });
+  const labels = { ...(state.tally.labels || {}) };
+  document.querySelectorAll('[data-label]').forEach((i) => { const v = i.value.trim(); if (v) labels[i.dataset.label] = v; else delete labels[i.dataset.label]; });
+  return { columns: state.tally.has_template ? columns : {}, ledgers, labels, cash_ledger: $('#cashLedger').value.trim() || 'Cash' };
+}
+async function saveTally(quiet) {
+  const t = state.tally;
+  if (t.has_template) {
+    const used = Object.values(collectTallySettings().columns);
+    const hasLedger = used.includes('ledger') || (used.includes('dr_ledger') && used.includes('cr_ledger'));
+    const hasAmount = used.includes('amount') || used.includes('debit') || used.includes('credit');
+    if (!used.includes('date') || !hasLedger || !hasAmount) { toast('The template needs at least a Date, the ledger(s), and an Amount (or Debit/Credit) column'); return false; }
+  }
+  state.tally = await api(`/api/tally/${state.companyId}/settings`, { method: 'PUT', body: collectTallySettings() });
+  renderTallySettings();
+  if (!quiet) toast('Tally settings saved');
+  return true;
+}
+$('#tallySave').onclick = () => saveTally(false).catch((e) => toast(e.message));
+$('#tplUpload').onclick = async () => {
+  const file = $('#tplFile').files[0];
+  if (!file) return toast('Choose your Tally template (.xlsx) first');
+  const fd = new FormData(); fd.append('file', file);
+  try { state.tally = await api(`/api/tally/${state.companyId}/template`, { method: 'POST', body: fd }); renderTallySettings(); toast('Template read — check the column matching, then save'); } catch (e) { toast(e.message); }
+};
+$('#tplRemove').onclick = async () => {
+  if (!confirm('Remove the template and use the default layout?')) return;
+  state.tally = await api(`/api/tally/${state.companyId}/template`, { method: 'DELETE' }); renderTallySettings();
+};
+$('#tallyForm').querySelectorAll('[data-range]').forEach((b) => { b.onclick = () => setRange($('#tallyForm'), b.dataset.range); });
+$('#tallyForm').addEventListener('submit', (ev) => { ev.preventDefault(); tallyPreview(); });
+
+async function tallyPreview() {
+  const f = $('#tallyForm');
+  if (!(await saveTally(true).catch((e) => { toast(e.message); return false; }))) return;
+  const q = `from=${f.from.value}&to=${f.to.value}&include_errors=${f.include_errors.checked ? 1 : 0}`;
+  $('#tallyPreview').innerHTML = '<p class="muted">Preparing…</p>';
+  try {
+    const p = await api(`/api/tally/${state.companyId}/preview?${q}`);
+    const dmy = (v) => v.split('-').reverse().join('-');
+    const dayBtns = (list, extra = () => '') => list.map((x) => `<button class="small" data-openid="${x.entryId}">${esc(dmy(x.date))}${extra(x)}</button>`).join(' ');
+    // Particulars that fall to "use the particulars" — list them so a Tally ledger can be set for each.
+    const labelSet = [...new Set(p.vouchers.filter((v) => !((state.tally.ledgers[colOf(v)] || {}).ledger)).map((v) => String(v.particulars || '').toUpperCase().replace(/\s+/g, ' ').trim()))].sort();
+    $('#labelMap').innerHTML = labelSet.length ? `<table class="pl" style="max-width:640px"><thead><tr><th>Particulars on the image</th><th>Tally ledger (blank = same name)</th></tr></thead><tbody>
+      ${labelSet.map((l) => `<tr><td>${esc(l)}</td><td><input data-label="${esc(l)}" value="${esc((state.tally.labels || {})[l] || '')}" placeholder="${esc(l)}"></td></tr>`).join('')}</tbody></table>` : 'No particulars need a ledger name.';
+    const excluded = `
+      ${p.unverified.length ? `<div class="fix-item warn"><b>${p.unverified.length} day(s) left out — not reviewed yet.</b> Open each, check it, and press “Save &amp; mark verified”:<div class="err-actions">${dayBtns(p.unverified, (x) => (x.errors ? ' ⚠' : ''))}</div></div>` : ''}
+      ${p.withErrors.length ? `<div class="fix-item error"><b>${p.withErrors.length} verified day(s) left out — they still show red mismatches.</b> Fix them, or tick “Also include verified days that still show red mismatches”.<div class="err-actions">${dayBtns(p.withErrors)}</div></div>` : ''}
+      ${p.exported.length ? `<div class="fix-item"><b>${p.exported.length} day(s) already sent to Tally</b> (not repeated): ${p.exported.map((x) => `${esc(dmy(x.date))} (batch #${x.batch})`).join(', ')}</div>` : ''}`;
+    const vrows = p.vouchers.slice(0, 200).map((v) => `<tr><td>${esc(dmy(v.date))}</td><td>${esc(v.voucher_type)}</td><td>${esc(v.voucher_no)}</td><td>${esc(v.dr_ledger)}</td><td>${esc(v.cr_ledger)}</td><td>${fmt(v.amount)}</td><td>${esc(v.particulars)}</td></tr>`).join('');
+    $('#tallyPreview').innerHTML = `<div class="err-list">${excluded}</div>
+      <div class="totals"><div><span>Days going to Tally</span><b>${p.included.length}</b></div><div><span>Vouchers</span><b>${p.totals.vouchers}</b></div>
+        <div><span>Total debit</span><b>${fmt(p.totals.debit) || '0.00'}</b></div><div><span>Total credit</span><b>${fmt(p.totals.credit) || '0.00'}</b></div>
+        <div><span>Ledgers used</span><b>${Object.keys(p.ledgers).length}</b></div></div>
+      ${p.vouchers.length ? `<div class="table-wrap" style="max-height:420px;margin-top:10px"><table class="sheet"><thead><tr><th>Date</th><th>Type</th><th>Voucher no</th><th>Debit ledger</th><th>Credit ledger</th><th>Amount</th><th>Particulars</th></tr></thead><tbody>${vrows}</tbody></table></div>
+        ${p.vouchers.length > 200 ? `<p class="muted small">Showing 200 of ${p.vouchers.length}.</p>` : ''}
+        <div class="review-actions" style="position:static"><span class="muted small">Check the ledger names above match Tally exactly. Creating the file locks these ${p.included.length} day(s).</span><span class="spacer"></span>
+        <button class="primary" id="tallyCreate">Create Tally file</button></div>` : '<p class="muted">Nothing to send for this range.</p>'}`;
+    $('#tallyPreview').querySelectorAll('[data-openid]').forEach((b) => { b.onclick = () => openReview(Number(b.dataset.openid)); });
+    $('#tallyCreate')?.addEventListener('click', async () => {
+      if (!confirm(`Create the Tally file for ${p.included.length} verified day(s), ${p.totals.vouchers} vouchers?\n\nThese days will be locked so they can't be sent twice.`)) return;
+      try {
+        await saveTally(true);
+        const r = await api(`/api/tally/${state.companyId}/export`, { method: 'POST', body: { from: f.from.value, to: f.to.value, include_errors: f.include_errors.checked } });
+        toast(`Batch #${r.batchId}: ${r.days} day(s), ${r.vouchers} vouchers — downloading`);
+        location.href = `/api/tally/batches/${r.batchId}/file`;
+        renderBatches(); tallyPreview();
+        if (state.monthId) loadSummary();
+      } catch (e) { toast(e.message); }
+    });
+  } catch (e) { $('#tallyPreview').innerHTML = `<p class="err">${esc(e.message)}</p>`; }
+}
+const colOf = (v) => v.col;
+
+async function renderBatches() {
+  const list = await api(`/api/tally/${state.companyId}/batches`);
+  const dmy = (v) => String(v).slice(0, 10).split('-').reverse().join('-');
+  $('#tallyBatches').innerHTML = list.length ? `<table class="pl"><thead><tr><th>Batch</th><th>Dates</th><th>Days</th><th>Vouchers</th><th>Created</th><th>Status</th><th></th></tr></thead><tbody>
+    ${list.map((b) => `<tr><td>#${b.id}</td><td>${dmy(b.date_from)} to ${dmy(b.date_to)}</td><td>${b.days}</td><td>${b.vouchers}</td><td>${new Date(b.created_at).toLocaleString('en-IN')}</td>
+      <td>${b.voided_at ? '<span class="badge b-skip">unlocked</span>' : '<span class="badge b-ok">in Tally</span>'}</td>
+      <td><a class="btn small" href="/api/tally/batches/${b.id}/file">Download again</a> ${b.voided_at ? '' : `<button class="small danger" data-unlock="${b.id}">Unlock days</button>`}</td></tr>`).join('')}</tbody></table>` : 'None yet.';
+  $('#tallyBatches').querySelectorAll('[data-unlock]').forEach((b) => {
+    b.onclick = async () => {
+      if (!confirm(`Unlock batch #${b.dataset.unlock}?\n\nIts days become editable and will be exported again next time.\nFirst DELETE this batch's vouchers in Tally, otherwise they will be entered twice.`)) return;
+      try { await api(`/api/tally/batches/${b.dataset.unlock}/unlock`, { method: 'POST' }); toast('Batch unlocked'); renderBatches(); if (state.monthId) loadSummary(); } catch (e) { toast(e.message); }
+    };
+  });
+}
+
+// Start last, after every handler above is defined.
+boot();
