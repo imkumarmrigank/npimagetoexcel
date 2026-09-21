@@ -17,9 +17,9 @@ function check(id, label, expected, actual, level = 'error') {
   };
 }
 
-// Checks for a single image. `prevClosing` is the computed closing balance of
-// the previous day (the sheet carries it into the next day's OB).
-function entryChecks(entry, row, month, prevClosing, dupDay) {
+// Checks for a single image. `prev` is the previous calendar day: its printed cash in hand
+// (what the shop actually carried over) or, if that isn't on the image, its computed closing.
+function entryChecks(entry, row, month, prev, dupDay) {
   const p = entry.printed || {};
   const checks = [];
 
@@ -44,8 +44,11 @@ function entryChecks(entry, row, month, prevClosing, dupDay) {
   const computedCash = round2(row.inflowLinesTotal - row.M);
   checks.push(check('cash', 'Cash in hand = inflow − expenses', p.cash_in_hand, computedCash));
 
-  if (prevClosing !== null && prevClosing !== undefined) {
-    checks.push(check('ob', 'Opening cash = previous day closing', row.OB, prevClosing, 'warn'));
+  if (prev) {
+    const printed = prev.cash !== null && prev.cash !== undefined && prev.cash !== '';
+    const c = check('ob', printed ? "Opening cash = previous day's cash in hand" : 'Opening cash = previous day closing', row.OB, printed ? prev.cash : prev.closing, 'warn');
+    if (c.status === 'warn') c.detail = `Today opens with ${row.OB.toFixed(2)}; day ${prev.day} ${printed ? 'ended with cash in hand' : 'closed at'} ${Number(printed ? prev.cash : prev.closing).toFixed(2)} (difference ${(-c.diff).toFixed(2)})`;
+    checks.push(c);
   }
   return checks;
 }
@@ -67,6 +70,7 @@ function buildMonth(month, entries) {
   const out = [];
   let prevClosing = null;
   let prevDay = null;
+  let prevCash = null;
   let first = true;
 
   const sorted = entries.slice().sort((a, b) => (a.day || 99) - (b.day || 99) || a.id - b.id);
@@ -78,7 +82,7 @@ function buildMonth(month, entries) {
     const L = round2(openingUsed + row.HSD_AMT + row.MS_AMT + row.LUB + row.COFFEE + row.COLL);
     const closing = round2(L - row.M);
     const consecutive = !first && e.day && prevDay === e.day - 1;
-    const checks = entryChecks(e, row, month, consecutive ? prevClosing : null, dupDay);
+    const checks = entryChecks(e, row, month, consecutive ? { day: prevDay, cash: prevCash, closing: prevClosing } : null, dupDay);
     out.push({
       id: e.id,
       day: e.day,
@@ -91,7 +95,7 @@ function buildMonth(month, entries) {
       errors: checks.filter((c) => c.status === 'error').length,
       warnings: checks.filter((c) => c.status === 'warn').length,
     });
-    if (e.day) { prevClosing = closing; prevDay = e.day; first = false; }
+    if (e.day) { prevClosing = closing; prevDay = e.day; prevCash = e.printed?.cash_in_hand ?? null; first = false; }
   }
 
   const dated = out.filter((d) => d.day);

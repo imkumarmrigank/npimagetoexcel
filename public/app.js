@@ -425,7 +425,7 @@ function liveCheck(sumIn, sumOut) {
   const obLine = e.lines.find((l) => l.side === 'in' && l.col === 'OB');
   if (ob && obLine) {
     document.querySelector(`tr[data-lid="${obLine.id}"] input[data-f="amount"]`)?.classList.add('warn');
-    problems.push(`Opening cash ${fmt(ob.expected)} ≠ previous day closing ${fmt(ob.actual)} (warning)`);
+    problems.push(`${ob.detail || `Opening cash ${fmt(ob.expected)} ≠ previous day ${fmt(ob.actual)}`} (warning)`);
   }
 
   const box = $('#fixList');
