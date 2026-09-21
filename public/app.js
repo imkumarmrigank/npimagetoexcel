@@ -211,7 +211,7 @@ function renderSummary() {
     <td class="status">${e.source === 'manual' ? badge('skip', 'manual') : ''} ${badge(e.status, e.status === 'verified' ? 'verified' : 'review')} ${e.errors ? badge('error', `${e.errors} mismatch`) : ''} ${e.warnings ? badge('warn', `${e.warnings} warn`) : ''}</td></tr>`; };
   for (let d = 1; d <= s.daysInMonth; d++) {
     const list = byDay.get(d);
-    if (!list) body += `<tr class="missing"><td>${d}</td><td colspan="${COLS.length - 1}" style="text-align:left">No image uploaded</td><td class="status">${badge('missing')}</td></tr>`;
+    if (!list) body += `<tr class="missing"><td>${d}</td><td colspan="${COLS.length - 1}" style="text-align:left">No image uploaded <button class="small" data-manual="${d}">Enter manually</button></td><td class="status">${badge('missing')}</td></tr>`;
     else body += list.map((e) => rowHtml(e, d)).join('');
   }
   for (const e of s.entries.filter((x) => !x.day)) body += rowHtml(e, '?');
@@ -225,6 +225,10 @@ function renderSummary() {
   }).join('')}<td></td></tr></tfoot>`;
   $('#sheet').innerHTML = head + `<tbody>${body}</tbody>` + foot;
   $('#sheet').querySelectorAll('tbody tr[data-id]').forEach((tr) => { tr.onclick = () => openReview(Number(tr.dataset.id)); });
+  const pad = (v) => String(v).padStart(2, '0');
+  $('#sheet').querySelectorAll('[data-manual]').forEach((b) => { b.onclick = () => enterManually(`${s.month.year}-${pad(s.month.month)}-${pad(b.dataset.manual)}`); });
+  // Suggest the first missing day of this month for the manual box.
+  if (s.missing.length) $('#manualDate').value = `${s.month.year}-${pad(s.month.month)}-${pad(s.missing[0])}`;
 }
 
 // ---------- upload ----------
@@ -259,18 +263,21 @@ function uploadFiles(files) {
   }
 }
 
-$('#manualBtn').onclick = async () => {
-  const day = Number($('#manualDay').value);
-  if (!day) return toast('Enter the day number first');
-  const existing = state.summary.entries.find((e) => e.day === day);
-  if (existing && !confirm(`Day ${day} already has an entry. Add another one anyway?`)) return openReview(existing.id);
+async function enterManually(date) {
+  if (!date) return toast('Pick a date first');
+  const [y, m, d] = date.split('-').map(Number);
+  const m0 = state.summary?.month;
+  if (m0 && m0.year === y && m0.month === m) {
+    const existing = state.summary.entries.find((e) => e.day === d);
+    if (existing && !confirm(`${date.split('-').reverse().join('-')} already has an entry. Add another one anyway?`)) return openReview(existing.id);
+  }
   try {
-    const r = await api(`/api/months/${state.monthId}/manual`, { method: 'POST', body: { day } });
-    $('#manualDay').value = '';
-    await loadSummary();
+    const r = await api(`/api/companies/${state.companyId}/manual`, { method: 'POST', body: { date } });
+    await loadMonths(r.month_id);
     await openReview(r.id);
   } catch (e) { toast(e.message); }
-};
+}
+$('#manualBtn').onclick = () => enterManually($('#manualDate').value);
 
 // ---------- review ----------
 const reviewDlg = $('#review');

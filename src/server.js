@@ -156,9 +156,29 @@ app.post('/api/months/:id/upload', upload.single('image'), wrap(async (req, res)
 }));
 
 // --- manual entry: a day typed in without an image ---
+// By date for a company: creates that month first if it doesn't exist yet.
+const MONTH_ABBR = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sept', 'Oct', 'Nov', 'Dec'];
+app.post('/api/companies/:id/manual', wrap(async (req, res) => {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(req.body.date || '');
+  if (!m) throw fail(400, 'Pick a date');
+  const [year, mon, day] = [Number(m[1]), Number(m[2]), Number(m[3])];
+  const company = (await db.query('SELECT * FROM companies WHERE id=$1', [req.params.id])).rows[0];
+  if (!company) throw fail(404, 'Company not found');
+  let month = (await db.query('SELECT * FROM months WHERE company_id=$1 AND year=$2 AND month=$3', [company.id, year, mon])).rows[0];
+  if (!month) {
+    const last = (await db.query('SELECT hsd_rate, ms_rate, hsd_cost, ms_cost FROM months WHERE company_id=$1 ORDER BY year DESC, month DESC LIMIT 1', [company.id])).rows[0] || {};
+    month = (await db.query(
+      'INSERT INTO months (company_id, title, year, month, hsd_rate, ms_rate, hsd_cost, ms_cost) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *',
+      [company.id, `${company.name}-${MONTH_ABBR[mon - 1]}-${String(year).slice(2)}`, year, mon, last.hsd_rate ?? null, last.ms_rate ?? null, last.hsd_cost ?? null, last.ms_cost ?? null],
+    )).rows[0];
+  }
+  res.json({ month_id: month.id, id: await createManual(month, day) });
+}));
 app.post('/api/months/:id/manual', wrap(async (req, res) => {
   const month = await getMonth(req.params.id);
-  const day = Number(req.body.day);
+  res.json({ id: await createManual(month, Number(req.body.day)) });
+}));
+async function createManual(month, day) {
   const last = new Date(month.year, month.month, 0).getDate();
   if (!day || day < 1 || day > last) throw fail(400, `Day must be between 1 and ${last}`);
   const lines = [
@@ -172,8 +192,8 @@ app.post('/api/months/:id/manual', wrap(async (req, res) => {
     "INSERT INTO entries (month_id, day, report_date, lines, source) VALUES ($1,$2,$3,$4,'manual') RETURNING id",
     [month.id, day, date, JSON.stringify(lines)],
   );
-  res.json({ id: r.rows[0].id });
-}));
+  return r.rows[0].id;
+}
 
 // --- reports across months: company-wise, date range, grouped by period ---
 function reportParams(q) {
