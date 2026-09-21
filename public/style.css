@@ -150,3 +150,5 @@ input.warn { background: var(--warn-bg); border-color: #e3b341; }
 .note { background: var(--warn-bg); color: var(--warn); padding: 8px 12px; border-radius: 8px; margin: 8px 0; font-size: 13px; }
 .pl tr.clickable { cursor: pointer; }
 .pl tr.clickable:hover td { background: var(--row-hover); }
+.warn-list { margin-top: 10px; background: var(--warn-bg); border: 1px solid #e3b341; color: var(--warn); border-radius: 8px; padding: 8px 12px; font-size: 12px; display: grid; gap: 4px; justify-items: start; }
+.warn-list button { margin-top: 4px; }

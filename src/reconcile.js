@@ -47,7 +47,13 @@ function entryChecks(entry, row, month, prev, dupDay) {
   if (prev) {
     const printed = prev.cash !== null && prev.cash !== undefined && prev.cash !== '';
     const c = check('ob', printed ? "Opening cash = previous day's cash in hand" : 'Opening cash = previous day closing', row.OB, printed ? prev.cash : prev.closing, 'warn');
-    if (c.status === 'warn') c.detail = `Today opens with ${row.OB.toFixed(2)}; day ${prev.day} ${printed ? 'ended with cash in hand' : 'closed at'} ${Number(printed ? prev.cash : prev.closing).toFixed(2)} (difference ${(-c.diff).toFixed(2)})`;
+    const accepted = entry.printed?.ob_accepted;
+    if (c.status === 'warn' && accepted !== null && accepted !== undefined && Math.abs(Number(accepted) - c.diff) <= TOL) {
+      c.status = 'ok';
+      c.detail = `Difference of ${(-c.diff).toFixed(2)} from day ${prev.day}'s cash in hand was checked and accepted`;
+    } else if (c.status === 'warn') {
+      c.detail = `Today opens with ${row.OB.toFixed(2)}; day ${prev.day} ${printed ? 'ended with cash in hand' : 'closed at'} ${Number(printed ? prev.cash : prev.closing).toFixed(2)} (difference ${(-c.diff).toFixed(2)})`;
+    }
     checks.push(c);
   }
   return checks;

@@ -420,13 +420,10 @@ function liveCheck(sumIn, sumOut) {
     }
   }
 
-  // Opening cash vs previous day's closing is a warning, from the server's last check.
+  // Opening cash vs the previous day's cash in hand: a warning the user can accept once checked.
   const ob = e.computed?.checks.find((c) => c.id === 'ob' && c.status === 'warn');
   const obLine = e.lines.find((l) => l.side === 'in' && l.col === 'OB');
-  if (ob && obLine) {
-    document.querySelector(`tr[data-lid="${obLine.id}"] input[data-f="amount"]`)?.classList.add('warn');
-    problems.push(`${ob.detail || `Opening cash ${fmt(ob.expected)} ≠ previous day ${fmt(ob.actual)}`} (warning)`);
-  }
+  if (ob && obLine) document.querySelector(`tr[data-lid="${obLine.id}"] input[data-f="amount"]`)?.classList.add('warn');
 
   const box = $('#fixList');
   box.classList.toggle('hidden', !problems.length && !e.computed?.errors);
@@ -434,6 +431,15 @@ function liveCheck(sumIn, sumOut) {
   box.innerHTML = problems.length
     ? `<b>${problems.length} thing(s) to fix</b> — red fields don't add up:<ul>${problems.map((p) => `<li>${esc(p)}</li>`).join('')}</ul>`
     : '<b>All figures on this image now add up.</b> Save to confirm.';
+
+  const warn = $('#warnList');
+  warn.classList.toggle('hidden', !ob);
+  if (ob) {
+    warn.innerHTML = `<b>Opening cash differs from the previous day</b> (amber field)<div>${esc(ob.detail)}.</div>
+      <div class="small">If this is expected (cash added or taken out overnight, rounding), accept it; otherwise correct the opening cash.</div>
+      <button type="button" class="small" id="acceptOb">Accept difference of ${fmt(-ob.diff) || '0.00'}</button>`;
+    $('#acceptOb').onclick = () => { e.printed = { ...(e.printed || {}), ob_accepted: ob.diff }; saveEntry(e.status).catch((err) => toast(err.message)); };
+  }
 }
 for (const id of ['#rTin', '#rTex', '#rCash', '#rDay']) $(id).addEventListener('input', () => liveSums());
 function renderComputed(c) {
@@ -452,7 +458,7 @@ async function saveEntry(status) {
     method: 'PUT',
     body: {
       day: num($('#rDay').value), report_date: $('#rDate').value, lines: e.lines, status,
-      printed: { total_inflow: num($('#rTin').value), total_expense: num($('#rTex').value), cash_in_hand: num($('#rCash').value) },
+      printed: { ...(e.printed || {}), total_inflow: num($('#rTin').value), total_expense: num($('#rTex').value), cash_in_hand: num($('#rCash').value) },
       remember: [...e.remember],
     },
   });
