@@ -235,7 +235,10 @@ function renderSummary() {
   const pad = (v) => String(v).padStart(2, '0');
   $('#sheet').querySelectorAll('[data-manual]').forEach((b) => { b.onclick = () => enterManually(`${s.month.year}-${pad(s.month.month)}-${pad(b.dataset.manual)}`); });
   // Suggest the first missing day of this month for the manual box.
-  if (s.missing.length) $('#manualDate').value = `${s.month.year}-${pad(s.month.month)}-${pad(s.missing[0])}`;
+  if (s.missing.length) {
+    $('#manualDate').value = `${s.month.year}-${pad(s.month.month)}-${pad(s.missing[0])}`;
+    if (!$('#uploadDate').value) $('#uploadDate').value = $('#manualDate').value;
+  }
 }
 
 // ---------- upload ----------
@@ -247,27 +250,38 @@ $('#fileInput').onchange = (e) => { uploadFiles([...e.target.files]); e.target.v
 
 let uploading = Promise.resolve();
 function uploadFiles(files) {
-  const monthId = state.monthId;
-  for (const file of files) {
+  const start = $('#uploadDate').value;
+  if (!start) return toast('Pick the date of the image first');
+  const companyId = state.companyId;
+  const [y, m, d] = start.split('-').map(Number);
+  let lastId = null, lastMonth = null;
+  files.forEach((file, i) => {
+    const date = d2(new Date(y, m - 1, d + i));
     const li = document.createElement('li');
-    li.innerHTML = `<span>${esc(file.name)}</span><span class="st muted">waiting…</span>`;
+    li.innerHTML = `<span>${esc(file.name)} → ${date.split('-').reverse().join('-')}</span><span class="st muted">waiting…</span>`;
     $('#queue').prepend(li);
     const st = li.querySelector('.st');
-    // One at a time: each image takes a while to read and the queue shows progress.
     uploading = uploading.then(async () => {
-      st.textContent = 'reading image…';
+      st.textContent = 'uploading…';
       const fd = new FormData();
       fd.append('image', file);
+      fd.append('date', date);
       try {
-        const r = await api(`/api/months/${monthId}/upload`, { method: 'POST', body: fd });
+        const r = await api(`/api/companies/${companyId}/upload`, { method: 'POST', body: fd });
         if (r.skipped) st.innerHTML = badge('skip', 'skipped') + ' ' + esc(r.reason);
-        else st.innerHTML = r.warning ? `${badge('warn', `day ${r.day ?? '?'}`)} ${esc(r.warning)}` : badge('ok', `day ${r.day}`);
-        if (monthId === state.monthId) await loadSummary();
+        else { st.innerHTML = r.warning ? `${badge('warn', 'saved')} ${esc(r.warning)}` : badge('ok', 'saved — type figures'); lastId = r.id; lastMonth = r.month_id; }
       } catch (e) {
         st.innerHTML = badge('error', 'failed') + ' ' + esc(e.message);
       }
     });
-  }
+  });
+  // When done: refresh, move the date on, and open the (last) uploaded image for typing.
+  uploading = uploading.then(async () => {
+    if (companyId !== state.companyId) return;
+    if (lastMonth) await loadMonths(lastMonth); else await loadSummary();
+    $('#uploadDate').value = d2(new Date(y, m - 1, d + files.length));
+    if (lastId && files.length === 1) await openReview(lastId);
+  });
 }
 
 async function enterManually(date) {
@@ -295,7 +309,7 @@ async function openReview(id) {
   $('#reviewImg').classList.toggle('hidden', !e.has_image);
   $('#noImg').classList.toggle('hidden', e.has_image);
   $('#imgOpen').classList.toggle('hidden', !e.has_image);
-  $('#rReextract').classList.toggle('hidden', !e.has_image);
+  $('#rOcr').classList.toggle('hidden', !e.has_image);
   if (e.has_image) { $('#reviewImg').src = `/api/entries/${id}/image`; $('#imgOpen').href = `/api/entries/${id}/image`; }
   setZoom(1);
   $('#rDay').value = e.day ?? '';
@@ -458,14 +472,33 @@ $('#rDelete').onclick = async () => {
   reviewDlg.close();
   await loadSummary();
 };
-$('#rReextract').onclick = async (ev) => {
-  if (!confirm('Read the image again? Your edits to this day will be replaced.')) return;
-  ev.target.disabled = true; ev.target.textContent = 'Reading…';
+$('#rOcr').onclick = async (ev) => {
+  const e = state.entry;
+  const typed = e.lines.some((l) => l.col !== 'OB' && l.amount !== null && l.amount !== '');
+  if (typed && !confirm('Replace the figures on this form with what the text reader finds?')) return;
+  const btn = ev.target;
+  btn.disabled = true;
   try {
-    const r = await api(`/api/entries/${state.entry.id}/reextract`, { method: 'POST' });
-    if (r.warning) toast(r.warning);
-    await loadSummary(); await openReview(state.entry.id);
-  } catch (e) { toast(e.message); } finally { ev.target.disabled = false; ev.target.textContent = 'Re-read image'; }
+    const mo = state.summary?.month || {};
+    const r = await readLedgerText(`/api/entries/${e.id}/image`, (p) => { btn.textContent = p; }, { hsd: Number(mo.hsd_rate), ms: Number(mo.ms_rate) });
+    if (!r.lines.length) return toast('Could not read any rows from this image — please type them in');
+    const m = state.summary?.month;
+    if (r.date && m && r.date.m === m.month && r.date.y === m.year) $('#rDay').value = r.date.d;
+    if (r.date) $('#rDate').value = r.date.text;
+    for (const [id, v] of [['#rTin', r.printed.total_inflow], ['#rTex', r.printed.total_expense], ['#rCash', r.printed.cash_in_hand]]) if (v !== null) $(id).value = v;
+    // Fuel rows: the month's rate is known, so a misread rate or unit is repaired from the amount.
+    const rateFor = { HSD: Number(mo.hsd_rate), MS: Number(mo.ms_rate) };
+    for (const l of r.lines) {
+      const fuel = l.side === 'in' && /^\s*(HSD|MS)\b/i.test(l.label) ? l.label.trim().toUpperCase().slice(0, l.label.trim().toUpperCase().startsWith('HSD') ? 3 : 2) : null;
+      const known = fuel && rateFor[fuel];
+      if (!known || !l.amount) continue;
+      if (!l.rate || Math.abs(l.rate - known) > 3) l.rate = known;
+      if (!l.unit || Math.abs(l.unit * l.rate - l.amount) > 1) l.unit = Math.round((l.amount / l.rate) * 100) / 100;
+    }
+    e.lines = r.lines.map((l, i) => ({ ...l, id: i + 1, col: null }));
+    await saveEntry(e.status); // server applies the mapping rules; checks then show what to fix
+    toast(`Read ${r.lines.length} rows — check them against the image; red fields don't add up`);
+  } catch (err) { toast(`Text reader failed: ${err.message}`); } finally { btn.disabled = false; btn.textContent = 'Try reading text (offline)'; }
 };
 $('#rReclass').onclick = async () => {
   await api(`/api/entries/${state.entry.id}/reclassify`, { method: 'POST' });
@@ -540,7 +573,6 @@ async function boot() {
     await loadCompanies();
   } catch (e) { if (!$('#loginDlg').open) toast(e.message); }
 }
-boot();
 
 // ---------- date ranges ----------
 const d2 = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
@@ -689,3 +721,5 @@ async function runCash() {
     });
   } catch (e) { $('#cashOut').innerHTML = `<div class="card err">${esc(e.message)}</div>`; }
 }
+
+boot();

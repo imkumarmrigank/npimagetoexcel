@@ -9,15 +9,12 @@
   },
   "description": "Daily ledger images to monthly reconciliation sheet",
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.127.0",
     "cookie-parser": "^1.4.7",
     "dotenv": "^18.0.1",
     "exceljs": "^4.4.0",
     "express": "^5.2.1",
     "multer": "^2.4.0",
-    "pg": "^8.23.0",
-    "sharp": "^0.35.4",
-    "zod": "^4.6.5"
+    "pg": "^8.23.0"
   },
   "engines": {
     "node": ">=20"

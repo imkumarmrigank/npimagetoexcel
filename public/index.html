@@ -57,9 +57,14 @@
       <div class="grid-2">
         <div class="card">
           <h3>Upload daily images</h3>
+          <div class="manual" style="border:0;margin:0 0 10px;padding:0">
+            <span class="muted">Date of the image:</span>
+            <input id="uploadDate" type="date" style="width:auto">
+            <span class="muted small">Several images get consecutive dates from here.</span>
+          </div>
           <label id="drop" class="drop">
             <input id="fileInput" type="file" accept="image/*" multiple hidden>
-            <strong>Drop images here</strong> or click to choose. You can select many at once.
+            <strong>Drop images here</strong> or click to choose. Each image opens beside a form for you to type its figures.
           </label>
           <ul id="queue" class="queue"></ul>
           <div class="manual">
@@ -209,7 +214,7 @@
 
         <div class="review-actions">
           <button class="danger ghost" id="rDelete">Delete image</button>
-          <button class="ghost" id="rReextract">Re-read image</button>
+          <button class="ghost" id="rOcr" title="Reads the image inside this browser with the free Tesseract text reader. Nothing is sent to any AI service.">Try reading text (offline)</button>
           <button class="ghost" id="rReclass">Re-apply rules</button>
           <span class="spacer"></span>
           <button id="rSave">Save</button>
@@ -280,6 +285,7 @@
   </dialog>
 
   <div id="toast" class="toast"></div>
+  <script src="ocr.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

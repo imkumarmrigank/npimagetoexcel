@@ -1,10 +1,12 @@
 # Pump Ledger — daily images → monthly reconciliation Excel
 
-Create a company (petrol pump), then upload its daily ledger report images (printed report or phone photo of the Excel
-screen). Claude reads each image, every line is mapped to a column of the monthly
-sheet, you validate each image against its own totals and the month as a whole, then
-download the month as an Excel file with the same layout and formulas as the
-original sheet.
+Create a company (petrol pump), then upload its daily ledger report images (printed report
+or phone photo of the Excel screen) or type a day in by hand. **No AI is used.** Each image is
+stored against its date and opens beside a form pre-filled with the company's usual rows; you type
+the figures. An optional **Try reading text (offline)** button runs the open-source Tesseract text
+reader inside your browser (the image never leaves your computer) to pre-fill the form for you to
+correct. Every line is mapped to a column of the monthly sheet, checked against the image's printed
+totals, and the month downloads as an Excel file with the same layout and formulas as the original.
 
 ## How lines map to the sheet
 
@@ -41,7 +43,7 @@ every image marked verified, totals-row closing = last day's closing.
 ## Run locally
 
 ```bash
-cp .env.example .env   # fill in DATABASE_URL and ANTHROPIC_API_KEY
+cp .env.example .env   # fill in DATABASE_URL
 npm install
 npm run dev            # http://localhost:3000 (or PORT)
 ```
@@ -53,7 +55,6 @@ Migrations in `db/migrations` run on every start.
 Web service: build `npm ci`, start `npm start`. Environment variables:
 
 - `DATABASE_URL` — Neon pooled connection string
-- `ANTHROPIC_API_KEY` — used to read the images
 - `APP_PASSWORD` — password to open the app
 - `SESSION_SECRET` — any long random string
 - `NODE_ENV=production`

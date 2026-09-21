@@ -8,7 +8,6 @@ const db = require('./db');
 const { migrate } = require('./migrate');
 const { compileRules, classifyLines, INFLOW_COLS, EXPENSE_COLS, DEFAULT_RULES } = require('./columns');
 const { buildMonth } = require('./reconcile');
-const { extractLedger, toEntry } = require('./extract');
 const { buildWorkbook, buildReportWorkbook, buildLedgerWorkbook, buildCashflowWorkbook } = require('./excel');
 const { report, ledger } = require('./reports');
 
@@ -119,81 +118,96 @@ app.get('/api/months/:id/export.xlsx', wrap(async (req, res) => {
   res.send(Buffer.from(buf));
 }));
 
-// --- upload: one image per request so each gets its own progress + error ---
-async function readInto(month, buffer, rules) {
-  const result = toEntry(await extractLedger(buffer));
-  const lines = classifyLines(result.lines, rules);
-  let day = null;
-  let warning = null;
-  if (result.date) {
-    if (result.date.m === month.month && result.date.y === month.year) day = result.date.d;
-    else warning = `Image is dated ${result.report_date}, not this month — set the day manually`;
-  }
-  return { ...result, lines, day, warning };
-}
-
-app.post('/api/months/:id/upload', upload.single('image'), wrap(async (req, res) => {
-  const month = await getMonth(req.params.id);
-  if (!req.file) throw fail(400, 'No image');
-  const hash = crypto.createHash('sha256').update(req.file.buffer).digest('hex');
-  const dup = await db.query('SELECT id, day FROM entries WHERE month_id=$1 AND image_hash=$2', [month.id, hash]);
-  if (dup.rowCount) {
-    return res.json({ skipped: true, reason: `Same image already uploaded (day ${dup.rows[0].day ?? '?'})`, id: dup.rows[0].id });
-  }
-  const x = await readInto(month, req.file.buffer, await loadRules(month.company_id));
-  const r = await db.query(
-    `INSERT INTO entries (month_id, day, report_date, image, image_mime, image_name, image_hash, lines, printed, notes)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id, day`,
-    [month.id, x.day, x.report_date, req.file.buffer, req.file.mimetype, req.file.originalname, hash,
-      JSON.stringify(x.lines), JSON.stringify(x.printed), JSON.stringify(x.notes)],
-  );
-  const clash = x.day ? await db.query('SELECT count(*)::int c FROM entries WHERE month_id=$1 AND day=$2', [month.id, x.day]) : null;
-  res.json({
-    id: r.rows[0].id,
-    day: x.day,
-    warning: x.warning || (clash && clash.rows[0].c > 1 ? `Day ${x.day} now has more than one image — review and delete the extra one` : null),
-  });
-}));
-
-// --- manual entry: a day typed in without an image ---
-// By date for a company: creates that month first if it doesn't exist yet.
+// --- adding days: an uploaded image or a hand-typed day, both start from a blank form ---
 const MONTH_ABBR = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sept', 'Oct', 'Nov', 'Dec'];
-app.post('/api/companies/:id/manual', wrap(async (req, res) => {
-  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(req.body.date || '');
+
+function parseDate(v) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(v || '');
   if (!m) throw fail(400, 'Pick a date');
   const [year, mon, day] = [Number(m[1]), Number(m[2]), Number(m[3])];
-  const company = (await db.query('SELECT * FROM companies WHERE id=$1', [req.params.id])).rows[0];
-  if (!company) throw fail(404, 'Company not found');
-  let month = (await db.query('SELECT * FROM months WHERE company_id=$1 AND year=$2 AND month=$3', [company.id, year, mon])).rows[0];
-  if (!month) {
-    const last = (await db.query('SELECT hsd_rate, ms_rate, hsd_cost, ms_cost FROM months WHERE company_id=$1 ORDER BY year DESC, month DESC LIMIT 1', [company.id])).rows[0] || {};
-    month = (await db.query(
-      'INSERT INTO months (company_id, title, year, month, hsd_rate, ms_rate, hsd_cost, ms_cost) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *',
-      [company.id, `${company.name}-${MONTH_ABBR[mon - 1]}-${String(year).slice(2)}`, year, mon, last.hsd_rate ?? null, last.ms_rate ?? null, last.hsd_cost ?? null, last.ms_cost ?? null],
-    )).rows[0];
-  }
-  res.json({ month_id: month.id, id: await createManual(month, day) });
-}));
-app.post('/api/months/:id/manual', wrap(async (req, res) => {
-  const month = await getMonth(req.params.id);
-  res.json({ id: await createManual(month, Number(req.body.day)) });
-}));
-async function createManual(month, day) {
-  const last = new Date(month.year, month.month, 0).getDate();
-  if (!day || day < 1 || day > last) throw fail(400, `Day must be between 1 and ${last}`);
-  const lines = [
-    { id: 1, side: 'in', label: 'OPENING CASH', unit: null, rate: null, amount: null, col: 'OB' },
-    { id: 2, side: 'in', label: 'HSD', unit: null, rate: month.hsd_rate ? Number(month.hsd_rate) : null, amount: null, col: 'HSD' },
-    { id: 3, side: 'in', label: 'MS', unit: null, rate: month.ms_rate ? Number(month.ms_rate) : null, amount: null, col: 'MS' },
-    { id: 4, side: 'out', label: 'PAYTM', unit: null, rate: null, amount: null, col: 'PTM' },
-  ];
-  const date = `${String(day).padStart(2, '0')}-${String(month.month).padStart(2, '0')}-${month.year}`;
-  const r = await db.query(
-    "INSERT INTO entries (month_id, day, report_date, lines, source) VALUES ($1,$2,$3,$4,'manual') RETURNING id",
-    [month.id, day, date, JSON.stringify(lines)],
-  );
-  return r.rows[0].id;
+  if (day < 1 || day > new Date(year, mon, 0).getDate()) throw fail(400, 'That date does not exist');
+  return { year, mon, day };
 }
+
+// The company's month for a date, created on first use with the last month's rates.
+async function monthFor(companyId, year, mon) {
+  const company = (await db.query('SELECT * FROM companies WHERE id=$1', [companyId])).rows[0];
+  if (!company) throw fail(404, 'Company not found');
+  const found = (await db.query('SELECT * FROM months WHERE company_id=$1 AND year=$2 AND month=$3', [company.id, year, mon])).rows[0];
+  if (found) return found;
+  const last = (await db.query('SELECT hsd_rate, ms_rate, hsd_cost, ms_cost FROM months WHERE company_id=$1 ORDER BY year DESC, month DESC LIMIT 1', [company.id])).rows[0] || {};
+  return (await db.query(
+    'INSERT INTO months (company_id, title, year, month, hsd_rate, ms_rate, hsd_cost, ms_cost) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT (company_id, year, month) DO UPDATE SET title = months.title RETURNING *',
+    [company.id, `${company.name}-${MONTH_ABBR[mon - 1]}-${String(year).slice(2)}`, year, mon, last.hsd_rate ?? null, last.ms_rate ?? null, last.hsd_cost ?? null, last.ms_cost ?? null],
+  )).rows[0];
+}
+
+// Blank form rows: opening cash, HSD, MS, plus the expense heads this company
+// uses on at least a third of its recent days, in their usual order.
+async function templateLines(month) {
+  const recent = (await db.query(
+    `SELECT e.lines FROM entries e JOIN months m ON m.id = e.month_id
+     WHERE m.company_id = $1 AND e.day IS NOT NULL ORDER BY m.year DESC, m.month DESC, e.day DESC LIMIT 10`, [month.company_id],
+  )).rows.map((r) => r.lines);
+  const seen = new Map();
+  for (const lines of recent) {
+    const labels = new Set();
+    lines.forEach((l, i) => {
+      if (l.side !== 'out' || !l.label) return;
+      const key = l.label.toUpperCase().replace(/\s+/g, ' ').trim();
+      if (labels.has(key) || /\d{3,}/.test(key)) return; // skip repeats and one-off vehicle numbers
+      labels.add(key);
+      const s = seen.get(key) || { label: key, col: l.col, count: 0, pos: 0 };
+      s.count += 1; s.pos += i;
+      seen.set(key, s);
+    });
+  }
+  const common = [...seen.values()].filter((s) => s.count >= Math.max(1, Math.ceil(recent.length / 3))).sort((a, b) => a.pos / a.count - b.pos / b.count);
+  const rate = (v) => (v ? Number(v) : null);
+  const lines = [
+    { side: 'in', label: 'OPENING CASH', rate: null, col: 'OB' },
+    { side: 'in', label: 'HSD', rate: rate(month.hsd_rate), col: 'HSD' },
+    { side: 'in', label: 'MS', rate: rate(month.ms_rate), col: 'MS' },
+    ...(common.length ? common.map((s) => ({ side: 'out', label: s.label, rate: null, col: s.col })) : [{ side: 'out', label: 'PAYTM', rate: null, col: 'PTM' }]),
+  ];
+  return lines.map((l, i) => ({ id: i + 1, unit: null, amount: null, ...l }));
+}
+
+async function createEntry(month, day, file) {
+  const date = `${String(day).padStart(2, '0')}-${String(month.month).padStart(2, '0')}-${month.year}`;
+  const lines = JSON.stringify(await templateLines(month));
+  const r = file
+    ? await db.query(
+      `INSERT INTO entries (month_id, day, report_date, image, image_mime, image_name, image_hash, lines, source)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'image') RETURNING id`,
+      [month.id, day, date, file.buffer, file.mimetype, file.originalname, file.hash, lines])
+    : await db.query("INSERT INTO entries (month_id, day, report_date, lines, source) VALUES ($1,$2,$3,$4,'manual') RETURNING id", [month.id, day, date, lines]);
+  const clash = await db.query('SELECT count(*)::int c FROM entries WHERE month_id=$1 AND day=$2', [month.id, day]);
+  return { id: r.rows[0].id, warning: clash.rows[0].c > 1 ? `${date} now has more than one entry — delete the extra one` : null };
+}
+
+// Upload one image for a date. Nothing reads the image on the server; the figures are typed in
+// (or read in the browser with the optional offline text reader).
+app.post('/api/companies/:id/upload', upload.single('image'), wrap(async (req, res) => {
+  if (!req.file) throw fail(400, 'No image');
+  if (!/^image\//.test(req.file.mimetype)) throw fail(400, 'Only image files can be uploaded');
+  const { year, mon, day } = parseDate(req.body.date);
+  const hash = crypto.createHash('sha256').update(req.file.buffer).digest('hex');
+  const dup = await db.query(
+    'SELECT e.id, e.report_date FROM entries e JOIN months m ON m.id = e.month_id WHERE m.company_id=$1 AND e.image_hash=$2', [req.params.id, hash]);
+  if (dup.rowCount) return res.json({ skipped: true, reason: `Same image already uploaded (${dup.rows[0].report_date || 'no date'})`, id: dup.rows[0].id });
+  const month = await monthFor(req.params.id, year, mon);
+  const e = await createEntry(month, day, { ...req.file, hash });
+  res.json({ ...e, month_id: month.id });
+}));
+
+// A day typed in without an image.
+app.post('/api/companies/:id/manual', wrap(async (req, res) => {
+  const { year, mon, day } = parseDate(req.body.date);
+  const month = await monthFor(req.params.id, year, mon);
+  const e = await createEntry(month, day, null);
+  res.json({ ...e, month_id: month.id });
+}));
 
 // --- reports across months: company-wise, date range, grouped by period ---
 function reportParams(q) {
@@ -277,16 +291,6 @@ app.put('/api/entries/:id', wrap(async (req, res) => {
     await db.query('INSERT INTO rules (company_id, side, pattern, col, priority) VALUES ($1,$2,$3,$4,5)', [companyId, l.side, pattern, l.col]);
   }
   res.json({ ok: true });
-}));
-app.post('/api/entries/:id/reextract', wrap(async (req, res) => {
-  const r = await db.query('SELECT e.image, e.month_id FROM entries e WHERE id=$1', [req.params.id]);
-  if (!r.rowCount) throw fail(404, 'Not found');
-  if (!r.rows[0].image) throw fail(400, 'This day was entered by hand; there is no image to read');
-  const month = await getMonth(r.rows[0].month_id);
-  const x = await readInto(month, r.rows[0].image, await loadRules(month.company_id));
-  await db.query('UPDATE entries SET day=$2, report_date=$3, lines=$4, printed=$5, notes=$6, status=$7, updated_at=now() WHERE id=$1',
-    [req.params.id, x.day, x.report_date, JSON.stringify(x.lines), JSON.stringify(x.printed), JSON.stringify(x.notes), 'review']);
-  res.json({ ok: true, warning: x.warning });
 }));
 app.post('/api/entries/:id/reclassify', wrap(async (req, res) => {
   const r = await db.query('SELECT e.lines, m.company_id FROM entries e JOIN months m ON m.id = e.month_id WHERE e.id=$1', [req.params.id]);
