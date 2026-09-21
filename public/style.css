@@ -160,3 +160,19 @@ input.warn { background: var(--warn-bg); border-color: #e3b341; }
 .fix-item ul { margin: 2px 0 0; padding-left: 18px; color: var(--muted); }
 .fix-title { font-weight: 600; display: flex; gap: 6px; align-items: center; }
 .checks li.hint-li { border-bottom: 0; padding-top: 0; }
+.recon { width: 100%; font-variant-numeric: tabular-nums; font-size: 14px; }
+.recon th, .recon td { border: 1px solid var(--line); padding: 6px 10px; text-align: right; white-space: nowrap; }
+.recon th:first-child, .recon td:first-child, .recon th:nth-child(6), .recon td:nth-child(6) { text-align: left; }
+.recon .gap { border: 0; width: 24px; background: transparent; }
+.recon thead th { background: #e9eef5; }
+.recon tfoot td { border: 0; }
+.recon tr.tot td:not([colspan]) { font-weight: 700; border-top: 2px solid var(--ink); }
+.recon tr.recon-bad td:not([colspan]) { background: #fde2e0; color: #8a1c14; font-weight: 600; }
+.recon tr.recon-ok td:not([colspan]) { background: var(--ok-bg); color: var(--ok); }
+.profit { color: #137a3c; font-weight: 700; }
+.loss { color: #b42318; font-weight: 700; }
+#costEditor { margin: 8px 0 14px; }
+#costEditor input { width: 120px; }
+.err-list { display: grid; gap: 8px; margin-top: 8px; }
+.err-actions { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 4px; }
+.menu .count { margin-left: auto; background: #e5484d; color: #fff; border-radius: 99px; font-size: 11px; padding: 1px 7px; }

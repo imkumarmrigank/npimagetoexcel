@@ -8,8 +8,9 @@ const db = require('./db');
 const { migrate } = require('./migrate');
 const { compileRules, classifyLines, INFLOW_COLS, EXPENSE_COLS, DEFAULT_RULES } = require('./columns');
 const { buildMonth } = require('./reconcile');
-const { buildWorkbook, buildReportWorkbook, buildLedgerWorkbook, buildCashflowWorkbook } = require('./excel');
-const { report, ledger } = require('./reports');
+const { buildWorkbook, buildReportWorkbook, buildLedgerWorkbook, buildCashflowWorkbook, buildReconWorkbook } = require('./excel');
+const { report, ledger, issues } = require('./reports');
+const tally = require('./tally');
 
 const app = express();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
@@ -51,9 +52,14 @@ app.use('/api', (req, res, next) => {
 
 const wrap = (fn) => (req, res) => fn(req, res).catch((e) => {
   console.error(e);
-  res.status(e.status || 500).json({ error: e.message || 'Server error' });
+  // A duplicate date raced past the check: the database's one-entry-per-day rule caught it.
+  if (e.code === '23505' && /entries_one_per_day/.test(e.constraint || e.message)) {
+    return res.status(409).json({ error: 'An entry for this date already exists', code: 'duplicate_day' });
+  }
+  res.status(e.status || 500).json({ error: e.message || 'Server error', ...(e.extra || {}) });
 });
-const fail = (status, message) => Object.assign(new Error(message), { status });
+const fail = (status, message, extra) => Object.assign(new Error(message), { status, extra });
+const dmy = (y, m, d) => `${String(d).padStart(2, '0')}-${String(m).padStart(2, '0')}-${y}`;
 
 async function loadRules(companyId) {
   return compileRules((await db.query('SELECT * FROM rules WHERE company_id = $1', [companyId])).rows);
@@ -64,7 +70,7 @@ async function getMonth(id) {
   return r.rows[0];
 }
 async function monthSummary(month) {
-  const entries = (await db.query('SELECT id, day, report_date, image_name, lines, printed, notes, status, source FROM entries WHERE month_id = $1', [month.id])).rows;
+  const entries = (await db.query('SELECT id, day, report_date, image_name, lines, printed, notes, status, source, tally_batch_id FROM entries WHERE month_id = $1', [month.id])).rows;
   return buildMonth(month, entries);
 }
 
@@ -188,8 +194,17 @@ async function templateLines(month) {
   return lines.map((l, i) => ({ id: i + 1, unit: null, amount: null, ...l }));
 }
 
-async function createEntry(month, day, file) {
+async function createEntry(month, day, file, replace = false) {
   const date = `${String(day).padStart(2, '0')}-${String(month.month).padStart(2, '0')}-${month.year}`;
+  const existing = (await db.query('SELECT id, source, tally_batch_id FROM entries WHERE month_id=$1 AND day=$2', [month.id, day])).rows[0];
+  if (existing) {
+    if (!replace) {
+      throw fail(409, `Already uploaded for ${date}. Open that day, or choose Replace to swap its image.`,
+        { code: 'duplicate_day', existing_id: existing.id, month_id: month.id, date });
+    }
+    if (existing.tally_batch_id) throw fail(409, `${date} was already sent to Tally (batch #${existing.tally_batch_id}); unlock it in Tally Export before replacing.`, { code: 'exported' });
+    await db.query('DELETE FROM entries WHERE id=$1', [existing.id]);
+  }
   const lines = JSON.stringify(await templateLines(month));
   const r = file
     ? await db.query(
@@ -197,9 +212,21 @@ async function createEntry(month, day, file) {
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'image') RETURNING id`,
       [month.id, day, date, file.buffer, file.mimetype, file.originalname, file.hash, lines])
     : await db.query("INSERT INTO entries (month_id, day, report_date, lines, source) VALUES ($1,$2,$3,$4,'manual') RETURNING id", [month.id, day, date, lines]);
-  const clash = await db.query('SELECT count(*)::int c FROM entries WHERE month_id=$1 AND day=$2', [month.id, day]);
-  return { id: r.rows[0].id, warning: clash.rows[0].c > 1 ? `${date} now has more than one entry — delete the extra one` : null };
+  return { id: r.rows[0].id, replaced: !!existing };
 }
+
+// Which of these dates already have an entry (checked before uploading, so the user is told at once).
+app.post('/api/companies/:id/existing', wrap(async (req, res) => {
+  const found = {};
+  for (const v of req.body.dates || []) {
+    const { year, mon, day } = parseDate(v);
+    const r = await db.query(
+      `SELECT e.id, e.month_id, e.source, e.image_name, e.status, e.tally_batch_id FROM entries e JOIN months m ON m.id = e.month_id
+       WHERE m.company_id=$1 AND m.year=$2 AND m.month=$3 AND e.day=$4`, [req.params.id, year, mon, day]);
+    if (r.rowCount) found[v] = r.rows[0];
+  }
+  res.json(found);
+}));
 
 // Upload one image for a date. Nothing reads the image on the server; the figures are typed in
 // (or read in the browser with the optional offline text reader).
@@ -210,9 +237,9 @@ app.post('/api/companies/:id/upload', upload.single('image'), wrap(async (req, r
   const hash = crypto.createHash('sha256').update(req.file.buffer).digest('hex');
   const dup = await db.query(
     'SELECT e.id, e.report_date FROM entries e JOIN months m ON m.id = e.month_id WHERE m.company_id=$1 AND e.image_hash=$2', [req.params.id, hash]);
-  if (dup.rowCount) return res.json({ skipped: true, reason: `Same image already uploaded (${dup.rows[0].report_date || 'no date'})`, id: dup.rows[0].id });
+  if (dup.rowCount) throw fail(409, `This exact image is already uploaded for ${dup.rows[0].report_date || 'another day'}`, { code: 'duplicate_image', existing_id: dup.rows[0].id });
   const month = await monthFor(req.params.id, year, mon);
-  const e = await createEntry(month, day, { ...req.file, hash });
+  const e = await createEntry(month, day, { ...req.file, hash }, req.body.replace === '1');
   res.json({ ...e, month_id: month.id });
 }));
 
@@ -248,6 +275,72 @@ const sendXlsx = (res, name, buf) => {
   res.send(Buffer.from(buf));
 };
 app.get('/api/reports', wrap(async (req, res) => res.json(await report(reportParams(req.query)))));
+// --- month-end figures for months not kept day by day (typed from the old sheet) ---
+const SUMMARY_KEYS = ['opening', 'coffee', 'lub', 'coll', 'bank', 'ptm', 'upi', 'tsale', 'fleet', 'ranjit', 'rbabu', 'others', 'pexp'];
+app.get('/api/companies/:id/summaries/:year/:month', wrap(async (req, res) => {
+  const r = await db.query('SELECT figures, updated_at FROM month_summaries WHERE company_id=$1 AND year=$2 AND month=$3', [req.params.id, req.params.year, req.params.month]);
+  res.json(r.rows[0] || null);
+}));
+app.put('/api/companies/:id/summaries/:year/:month', wrap(async (req, res) => {
+  const b = req.body || {};
+  const num = (v) => (v === '' || v === null || v === undefined || Number.isNaN(Number(v)) ? 0 : Number(v));
+  const fuel = (list) => (Array.isArray(list) ? list : []).map((x) => ({ units: num(x.units), rate: num(x.rate) })).filter((x) => x.units || x.rate);
+  const figures = { ...Object.fromEntries(SUMMARY_KEYS.map((k) => [k, num(b[k])])), hsd: fuel(b.hsd), ms: fuel(b.ms) };
+  await db.query(
+    `INSERT INTO month_summaries (company_id, year, month, figures) VALUES ($1,$2,$3,$4)
+     ON CONFLICT (company_id, year, month) DO UPDATE SET figures = EXCLUDED.figures, updated_at = now()`,
+    [req.params.id, req.params.year, req.params.month, JSON.stringify(figures)]);
+  res.json({ ok: true, figures });
+}));
+app.delete('/api/companies/:id/summaries/:year/:month', wrap(async (req, res) => {
+  await db.query('DELETE FROM month_summaries WHERE company_id=$1 AND year=$2 AND month=$3', [req.params.id, req.params.year, req.params.month]);
+  res.json({ ok: true });
+}));
+
+// Month-end figures in the same shape as a report total, so one layout serves both.
+function summaryToTotal(f, from, to) {
+  const fuel = (list) => (list || []).map((g) => ({ rate: g.rate, units: g.units, amount: Math.round(g.units * g.rate * 100) / 100, from, to }));
+  const hsd = fuel(f.hsd), ms = fuel(f.ms);
+  const sum = (list, k) => list.reduce((x, g) => x + g[k], 0);
+  return {
+    days: 0, verified: 0, fromSummary: true, opening: f.opening, firstDate: from, lastDate: to, lastCash: null, gaps: [],
+    fuelByRate: { HSD: hsd, MS: ms }, HSD: sum(hsd, 'units'), HSD_AMT: sum(hsd, 'amount'), MS: sum(ms, 'units'), MS_AMT: sum(ms, 'amount'),
+    COFFEE: f.coffee, LUB: f.lub, COLL: f.coll, BANK: f.bank, PTM: f.ptm, UPI: f.upi, TSALE: f.tsale, FLEET: f.fleet,
+    RANJIT: f.ranjit, RBABU: f.rbabu, OTHERS: f.others, PEXP: f.pexp,
+  };
+}
+app.get('/api/companies/:id/summaries/:year/:month/total', wrap(async (req, res) => {
+  const r = await db.query('SELECT figures FROM month_summaries WHERE company_id=$1 AND year=$2 AND month=$3', [req.params.id, req.params.year, req.params.month]);
+  if (!r.rowCount) return res.json(null);
+  const y = Number(req.params.year), m = Number(req.params.month);
+  const pad = (v) => String(v).padStart(2, '0');
+  res.json(summaryToTotal(r.rows[0].figures, `${y}-${pad(m)}-01`, `${y}-${pad(m)}-${pad(new Date(y, m, 0).getDate())}`));
+}));
+
+// Cash reconciliation title: "Cash reconcillation-August-26" for a whole month, else the dates.
+const MONTH_FULL = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+function reconLabel(from, to) {
+  if (!from || !to) return 'All dates';
+  const [y, m, d] = from.split('-').map(Number);
+  const last = new Date(y, m, 0).getDate();
+  if (d === 1 && to === `${from.slice(0, 8)}${String(last).padStart(2, '0')}`) return `${MONTH_FULL[m - 1]}-${String(y).slice(2)}`;
+  const f = (v) => v.split('-').reverse().join('-');
+  return `${f(from)} to ${f(to)}`;
+}
+app.get('/api/recon/export.xlsx', wrap(async (req, res) => {
+  const p = reportParams(req.query);
+  if (!p.companyId) throw fail(400, 'Pick a company');
+  const company = (await db.query('SELECT name FROM companies WHERE id=$1', [p.companyId])).rows[0]?.name || '';
+  const title = `Cash reconcillation-${reconLabel(p.from, p.to)}`;
+  let total = (await report(p)).total;
+  // A month kept only as month-end figures (no daily entries) uses those figures.
+  if (!total.days && p.from && p.to && /^\d{4}-\d{2}-01$/.test(p.from) && p.to.slice(0, 7) === p.from.slice(0, 7)) {
+    const [y, m] = p.from.split('-').map(Number);
+    const sm = (await db.query('SELECT figures FROM month_summaries WHERE company_id=$1 AND year=$2 AND month=$3', [p.companyId, y, m])).rows[0];
+    if (sm) total = summaryToTotal(sm.figures, p.from, p.to);
+  }
+  sendXlsx(res, `${company} ${title}`, await buildReconWorkbook(title, total));
+}));
 app.get('/api/cashflow/export.xlsx', wrap(async (req, res) => {
   const p = reportParams(req.query);
   const title = await reportTitle(p, `Deposits & expenses (${p.group}-wise)`);
@@ -258,6 +351,76 @@ app.get('/api/reports/export.xlsx', wrap(async (req, res) => {
   const title = await reportTitle(p, `${p.group}-wise report`);
   sendXlsx(res, title, await buildReportWorkbook(title, await report(p), !p.companyId));
 }));
+// --- Tally export: only verified days, each day once ---
+const templateUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } });
+const rangeOf = (q) => {
+  const date = (v) => (/^\d{4}-\d{2}-\d{2}$/.test(v || '') ? v : null);
+  const from = date(q.from), to = date(q.to);
+  if (!from || !to || from > to) throw fail(400, 'Pick a From and To date');
+  return { from, to };
+};
+app.get('/api/tally/:cid/settings', wrap(async (req, res) => res.json(await tally.getSettings(Number(req.params.cid)))));
+app.post('/api/tally/:cid/template', templateUpload.single('file'), wrap(async (req, res) => {
+  if (!req.file || !/\.xlsx$/i.test(req.file.originalname)) throw fail(400, 'Upload the Tally template as an .xlsx file');
+  const t = await tally.readTemplate(req.file.buffer);
+  const columns = Object.fromEntries(t.headers.map((h) => [h.letter, tally.guessField(h.text)]));
+  await db.query(
+    `INSERT INTO tally_settings (company_id, template, template_name, sheet, header_row, columns) VALUES ($1,$2,$3,$4,$5,$6)
+     ON CONFLICT (company_id) DO UPDATE SET template=EXCLUDED.template, template_name=EXCLUDED.template_name, sheet=EXCLUDED.sheet,
+       header_row=EXCLUDED.header_row, columns=EXCLUDED.columns, updated_at=now()`,
+    [req.params.cid, req.file.buffer, req.file.originalname, t.sheet, t.headerRow, JSON.stringify(columns)]);
+  res.json(await tally.getSettings(Number(req.params.cid)));
+}));
+app.delete('/api/tally/:cid/template', wrap(async (req, res) => {
+  await db.query("UPDATE tally_settings SET template=NULL, template_name=NULL, sheet=NULL, header_row=NULL, columns='{}' WHERE company_id=$1", [req.params.cid]);
+  res.json(await tally.getSettings(Number(req.params.cid)));
+}));
+app.put('/api/tally/:cid/settings', wrap(async (req, res) => {
+  const { columns = {}, ledgers = {}, labels = {}, cash_ledger } = req.body || {};
+  const okField = (f) => !f || Object.prototype.hasOwnProperty.call(tally.FIELDS, f);
+  if (!Object.values(columns).every(okField)) throw fail(400, 'Unknown field in column mapping');
+  const cleanLabels = Object.fromEntries(Object.entries(labels).map(([k, v]) => [k.toUpperCase().replace(/\s+/g, ' ').trim(), String(v || '').trim()]).filter(([k, v]) => k && v));
+  await db.query(
+    `INSERT INTO tally_settings (company_id, columns, ledgers, labels, cash_ledger) VALUES ($1,$2,$3,$4,$5)
+     ON CONFLICT (company_id) DO UPDATE SET columns=EXCLUDED.columns, ledgers=EXCLUDED.ledgers, labels=EXCLUDED.labels, cash_ledger=EXCLUDED.cash_ledger, updated_at=now()`,
+    [req.params.cid, JSON.stringify(columns), JSON.stringify(ledgers), JSON.stringify(cleanLabels), String(cash_ledger || 'Cash').trim() || 'Cash']);
+  res.json(await tally.getSettings(Number(req.params.cid)));
+}));
+app.get('/api/tally/:cid/preview', wrap(async (req, res) => {
+  const { from, to } = rangeOf(req.query);
+  const pv = await tally.preview(Number(req.params.cid), from, to, req.query.include_errors === '1');
+  delete pv.settings;
+  res.json(pv);
+}));
+app.post('/api/tally/:cid/export', wrap(async (req, res) => {
+  const { from, to } = rangeOf(req.body || {});
+  res.json(await tally.exportBatch(Number(req.params.cid), from, to, !!req.body.include_errors));
+}));
+app.get('/api/tally/:cid/batches', wrap(async (req, res) => {
+  res.json((await db.query(
+    `SELECT id, date_from, date_to, array_length(entry_ids, 1) AS days, vouchers, file_name, created_at, voided_at, summary
+     FROM tally_batches WHERE company_id=$1 ORDER BY id DESC`, [req.params.cid])).rows);
+}));
+app.get('/api/tally/batches/:id/file', wrap(async (req, res) => {
+  const b = (await db.query('SELECT file, file_name FROM tally_batches WHERE id=$1', [req.params.id])).rows[0];
+  if (!b) throw fail(404, 'Batch not found');
+  sendXlsx(res, b.file_name.replace(/\.xlsx$/i, ''), b.file);
+}));
+// Unlock: the days can be corrected and exported again. The user must delete this batch's vouchers in Tally first.
+app.post('/api/tally/batches/:id/unlock', wrap(async (req, res) => {
+  const b = (await db.query('SELECT id, voided_at FROM tally_batches WHERE id=$1', [req.params.id])).rows[0];
+  if (!b) throw fail(404, 'Batch not found');
+  if (b.voided_at) throw fail(400, 'This batch is already unlocked');
+  await db.query('UPDATE entries SET tally_batch_id=NULL WHERE tally_batch_id=$1', [b.id]);
+  await db.query('UPDATE tally_batches SET voided_at=now() WHERE id=$1', [b.id]);
+  res.json({ ok: true });
+}));
+
+app.get('/api/issues', wrap(async (req, res) => {
+  const p = reportParams(req.query);
+  if (!p.companyId) throw fail(400, 'Pick a company');
+  res.json(await issues(p));
+}));
 app.get('/api/ledger', wrap(async (req, res) => res.json(await ledger(reportParams(req.query)))));
 app.get('/api/ledger/export.xlsx', wrap(async (req, res) => {
   const p = reportParams(req.query);
@@ -267,7 +430,7 @@ app.get('/api/ledger/export.xlsx', wrap(async (req, res) => {
 
 // --- entries ---
 app.get('/api/entries/:id', wrap(async (req, res) => {
-  const r = await db.query('SELECT id, month_id, day, report_date, image_name, lines, printed, notes, status, source, image IS NOT NULL AS has_image FROM entries WHERE id=$1', [req.params.id]);
+  const r = await db.query('SELECT id, month_id, day, report_date, image_name, lines, printed, notes, status, source, tally_batch_id, image IS NOT NULL AS has_image FROM entries WHERE id=$1', [req.params.id]);
   if (!r.rowCount) throw fail(404, 'Not found');
   const e = r.rows[0];
   const summary = await monthSummary(await getMonth(e.month_id));
@@ -282,9 +445,18 @@ app.get('/api/entries/:id/image', wrap(async (req, res) => {
 }));
 app.put('/api/entries/:id', wrap(async (req, res) => {
   const { day, report_date, lines, printed, status, remember } = req.body;
-  const owner = await db.query('SELECT m.company_id FROM entries e JOIN months m ON m.id = e.month_id WHERE e.id = $1', [req.params.id]);
+  const owner = await db.query(
+    'SELECT m.company_id, m.year, m.month, e.month_id, e.tally_batch_id, e.day, e.lines, e.printed, e.status FROM entries e JOIN months m ON m.id = e.month_id WHERE e.id = $1', [req.params.id]);
   if (!owner.rowCount) throw fail(404, 'Not found');
-  const companyId = owner.rows[0].company_id;
+  const cur = owner.rows[0];
+  const companyId = cur.company_id;
+  if (cur.tally_batch_id) throw fail(409, `This day was sent to Tally in batch #${cur.tally_batch_id} and is locked. Unlock it in Tally Export to change it.`, { code: 'exported' });
+  if (day && day !== cur.day) {
+    const last = new Date(cur.year, cur.month, 0).getDate();
+    if (day < 1 || day > last) throw fail(400, `Day must be between 1 and ${last}`);
+    const clash = await db.query('SELECT id FROM entries WHERE month_id=$1 AND day=$2 AND id<>$3', [cur.month_id, day, req.params.id]);
+    if (clash.rowCount) throw fail(409, `${dmy(cur.year, cur.month, day)} already has an entry — open it instead, or delete one of them.`, { code: 'duplicate_day', existing_id: clash.rows[0].id });
+  }
   const rules = await loadRules(companyId);
   const clean = classifyLines((lines || []).map((l, i) => ({
     id: l.id || i + 1,
@@ -296,25 +468,42 @@ app.put('/api/entries/:id', wrap(async (req, res) => {
     col: l.col || null,
     manual: !!l.manual,
   })), rules);
+  // A verified day that is changed goes back to review, unless this save is the verification.
+  const strip = (ls) => JSON.stringify((ls || []).map(({ side, label, unit, rate, amount, col }) => [side, label, unit, rate, amount, col]));
+  const changed = strip(clean) !== strip(cur.lines) || JSON.stringify(printed || {}) !== JSON.stringify(cur.printed || {}) || (day || null) !== cur.day;
+  const nextStatus = status === 'verified' && (req.body.verify || !changed) ? 'verified' : 'review';
   await db.query(
     'UPDATE entries SET day=$2, report_date=$3, lines=$4, printed=$5, status=$6, updated_at=now() WHERE id=$1',
-    [req.params.id, day || null, report_date || null, JSON.stringify(clean), JSON.stringify(printed || {}), status === 'verified' ? 'verified' : 'review'],
+    [req.params.id, day || null, report_date || null, JSON.stringify(clean), JSON.stringify(printed || {}), nextStatus],
   );
   // "Remember" turns a hand-assigned line into an exact-label rule for future images.
   for (const l of clean.filter((x) => x.manual && remember?.includes(x.id))) {
     const pattern = `^\\s*${l.label.toUpperCase().replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '\\s*')}\\s*$`;
     await db.query('INSERT INTO rules (company_id, side, pattern, col, priority) VALUES ($1,$2,$3,$4,5)', [companyId, l.side, pattern, l.col]);
   }
+  res.json({ ok: true, status: nextStatus, reverted: cur.status === 'verified' && nextStatus !== 'verified' });
+}));
+// Record that an opening-cash difference was checked (from the Errors list or the form).
+app.post('/api/entries/:id/accept-ob', wrap(async (req, res) => {
+  const r = await db.query('SELECT printed, tally_batch_id FROM entries WHERE id=$1', [req.params.id]);
+  if (!r.rowCount) throw fail(404, 'Not found');
+  if (r.rows[0].tally_batch_id) throw fail(409, 'This day was sent to Tally and is locked.', { code: 'exported' });
+  const diff = Number(req.body.diff);
+  if (!Number.isFinite(diff)) throw fail(400, 'Missing difference');
+  await db.query('UPDATE entries SET printed = $2, updated_at = now() WHERE id = $1', [req.params.id, JSON.stringify({ ...(r.rows[0].printed || {}), ob_accepted: diff })]);
   res.json({ ok: true });
 }));
 app.post('/api/entries/:id/reclassify', wrap(async (req, res) => {
-  const r = await db.query('SELECT e.lines, m.company_id FROM entries e JOIN months m ON m.id = e.month_id WHERE e.id=$1', [req.params.id]);
+  const r = await db.query('SELECT e.lines, e.tally_batch_id, m.company_id FROM entries e JOIN months m ON m.id = e.month_id WHERE e.id=$1', [req.params.id]);
   if (!r.rowCount) throw fail(404, 'Not found');
+  if (r.rows[0].tally_batch_id) throw fail(409, 'This day was sent to Tally and is locked.', { code: 'exported' });
   const lines = classifyLines(r.rows[0].lines, await loadRules(r.rows[0].company_id), { force: true });
   await db.query('UPDATE entries SET lines=$2, updated_at=now() WHERE id=$1', [req.params.id, JSON.stringify(lines)]);
   res.json({ ok: true });
 }));
 app.delete('/api/entries/:id', wrap(async (req, res) => {
+  const x = await db.query('SELECT tally_batch_id FROM entries WHERE id=$1', [req.params.id]);
+  if (x.rows[0]?.tally_batch_id) throw fail(409, `This day was sent to Tally in batch #${x.rows[0].tally_batch_id}; unlock it in Tally Export before deleting.`, { code: 'exported' });
   await db.query('DELETE FROM entries WHERE id=$1', [req.params.id]);
   res.json({ ok: true });
 }));

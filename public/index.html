@@ -24,9 +24,12 @@
     </div>
     <nav class="menu" id="tabs">
       <button data-tab="sheet" class="active"><span>▦</span>Monthly sheet</button>
+      <button data-tab="errors"><span>⚠</span>Errors <b id="errCount" class="count hidden"></b></button>
+      <button data-tab="recon"><span>⚖</span>Cash Reconciliation</button>
       <button data-tab="cash"><span>⇩</span>Deposits &amp; Expenses</button>
       <button data-tab="reports"><span>₹</span>Reports &amp; P&amp;L</button>
       <button data-tab="ledger"><span>≡</span>Ledger</button>
+      <button data-tab="tally"><span>⇪</span>Tally Export</button>
       <button id="rulesBtn"><span>⇄</span>Mapping rules</button>
     </nav>
     <div class="side-foot"><button id="logoutBtn" class="ghost small hidden">Sign out</button></div>
@@ -90,6 +93,45 @@
         </div>
       </div>
     </section>
+    <section id="errorsView" class="hidden">
+      <div class="card">
+        <h3>Errors — <span id="errCompany"></span></h3>
+        <p class="muted small" style="margin:0 0 10px">Everything that needs attention, grouped by type. Each item says why it happened and how to fix or verify it. When it is fixed it disappears from this list.</p>
+        <form id="errForm" class="fields">
+          <label>From <input name="from" type="date"></label>
+          <label>To <input name="to" type="date"></label>
+          <div class="quick">
+            <button type="button" data-range="month">This month</button>
+            <button type="button" data-range="fy">This FY</button>
+            <button type="button" data-range="all">All dates</button>
+          </div>
+          <button class="primary">Refresh</button>
+        </form>
+      </div>
+      <div id="errOut"></div>
+    </section>
+
+    <section id="reconView" class="hidden">
+      <div class="card">
+        <h3>Cash Reconciliation — <span id="reconCompany"></span></h3>
+        <form id="reconForm" class="fields">
+          <label>Month <input name="month" type="month"></label>
+          <label>or From <input name="from" type="date"></label>
+          <label>To <input name="to" type="date"></label>
+          <div class="quick">
+            <button type="button" data-range="month">This month</button>
+            <button type="button" data-range="prev">Previous month</button>
+            <button type="button" data-range="quarter">This quarter</button>
+            <button type="button" data-range="half">This half</button>
+            <button type="button" data-range="fy">This FY</button>
+          </div>
+          <button class="primary">Show</button>
+          <a id="reconXlsx" class="btn" href="#">Download Excel</a>
+        </form>
+      </div>
+      <div id="reconOut"></div>
+    </section>
+
     <section id="cashView" class="hidden">
       <div class="card">
         <div class="row-between"><h3>Deposits &amp; Expenses — <span id="cashCompany"></span></h3></div>
@@ -118,6 +160,51 @@
         </form>
       </div>
       <div id="cashOut"></div>
+    </section>
+
+    <section id="tallyView" class="hidden">
+      <div class="card">
+        <h3>Tally Export — <span id="tallyCompany"></span></h3>
+        <p class="muted small" style="margin:0">Only days you have <b>reviewed and marked verified</b> go into the Tally file, and each day goes only once:
+          creating a file locks its days. If a day must change later, unlock its batch below — and delete that batch's vouchers in Tally before importing again.</p>
+      </div>
+      <div class="card">
+        <h3>1. Your Tally import template</h3>
+        <div id="tplInfo" class="small"></div>
+        <div class="manual" style="border:0;margin:8px 0;padding:0">
+          <input id="tplFile" type="file" accept=".xlsx" style="width:auto">
+          <button id="tplUpload">Upload template</button>
+          <button id="tplRemove" class="ghost danger hidden">Remove template (use the default layout)</button>
+        </div>
+        <div id="tplMap"></div>
+      </div>
+      <div class="card">
+        <h3>2. Tally ledger names</h3>
+        <div class="fields" style="max-width:420px"><label>Cash ledger in Tally <input id="cashLedger" placeholder="Cash"></label></div>
+        <div id="ledgerMap"></div>
+        <h4>Particulars → ledger <span class="muted small" style="text-transform:none;letter-spacing:0">for columns set to “use particulars” (expenses, others, collections)</span></h4>
+        <div id="labelMap" class="muted small">Preview a date range below to list the particulars.</div>
+        <div class="review-actions" style="position:static"><span class="spacer"></span><button class="primary" id="tallySave">Save template &amp; ledger settings</button></div>
+      </div>
+      <div class="card">
+        <h3>3. Create the Tally file</h3>
+        <form id="tallyForm" class="fields">
+          <label>From <input name="from" type="date" required></label>
+          <label>To <input name="to" type="date" required></label>
+          <div class="quick">
+            <button type="button" data-range="month">This month</button>
+            <button type="button" data-range="quarter">This quarter</button>
+            <button type="button" data-range="fy">This FY</button>
+          </div>
+          <label style="grid-column:1/-1;display:flex;gap:8px;align-items:center"><input type="checkbox" name="include_errors" style="width:auto"> Also include verified days that still show red mismatches</label>
+          <button class="primary">Preview</button>
+        </form>
+        <div id="tallyPreview"></div>
+      </div>
+      <div class="card">
+        <h3>Files already created</h3>
+        <div id="tallyBatches" class="muted">None yet.</div>
+      </div>
     </section>
 
     <section id="reportsView" class="hidden">
@@ -191,6 +278,7 @@
             <button class="ghost small" onclick="review.close()">✕</button>
           </div>
         </div>
+        <div id="lockNote" class="note hidden"></div>
         <div class="fields">
           <label>Day <input id="rDay" type="number" min="1" max="31"><small class="hint" id="hDay"></small></label>
           <label>Date on image <input id="rDate" type="text"></label>

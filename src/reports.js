@@ -35,7 +35,7 @@ async function loadDays({ companyId, from, to }) {
   if (to) { params.push(to); where += ` AND make_date(m.year, m.month, 1) <= $${params.length}::date`; }
   const months = (await db.query(`SELECT m.*, c.name AS company FROM months m JOIN companies c ON c.id = m.company_id WHERE ${where} ORDER BY m.year, m.month`, params)).rows;
   if (!months.length) return [];
-  const entries = (await db.query('SELECT id, month_id, day, report_date, lines, printed, status, source FROM entries WHERE month_id = ANY($1)', [months.map((m) => m.id)])).rows;
+  const entries = (await db.query('SELECT id, month_id, day, report_date, lines, printed, status, source, tally_batch_id FROM entries WHERE month_id = ANY($1)', [months.map((m) => m.id)])).rows;
   const days = [];
   const lines = new Map(entries.map((e) => [e.id, e.lines]));
   for (const month of months) {
@@ -54,19 +54,41 @@ const SUM_KEYS = ['HSD', 'HSD_AMT', 'MS', 'MS_AMT', 'LUB', 'COFFEE', 'COLL', 'M'
 
 function emptyAgg() {
   const a = Object.fromEntries(SUM_KEYS.map((k) => [k, 0]));
-  return { ...a, days: 0, verified: 0, hsdCost: 0, msCost: 0, costMissingDays: 0, opening: null, closing: null, pexp: new Map() };
+  return { ...a, days: 0, verified: 0, hsdCost: 0, msCost: 0, costMissingDays: 0, opening: null, closing: null, firstDate: null, lastDate: null, lastCash: null, pexp: new Map(), prevCash: null, gaps: [], fuel: { HSD: new Map(), MS: new Map() } };
 }
 
 function addDay(a, d) {
   for (const k of SUM_KEYS) a[k] += n(d.row[k]);
   a.days += 1;
   if (d.status === 'verified') a.verified += 1;
-  if (a.opening === null) a.opening = d.row.openingUsed;
+  if (a.opening === null) { a.opening = d.row.openingUsed; a.firstDate = d.date; }
   a.closing = d.row.closing;
+  a.lastDate = d.date;
+  a.lastCash = d.row.CASH ?? null;
+  // Why the printed cash in hand drifts from the worked-out balance: every day adds
+  // (its opening − the previous day's cash in hand) + (its printed cash − its own rows' result).
+  const calc = n(d.row.inflowLinesTotal) - n(d.row.M);
+  const cash = d.row.CASH === null || d.row.CASH === undefined ? calc : n(d.row.CASH);
+  if (a.prevCash !== null) {
+    const o = round2(n(d.row.OB) - a.prevCash);
+    if (Math.abs(o) >= 0.01) a.gaps.push({ date: d.date, kind: 'opening', amount: o, company: d.month.company });
+  }
+  const e = round2(cash - calc);
+  if (Math.abs(e) >= 0.01) a.gaps.push({ date: d.date, kind: 'day', amount: e, company: d.month.company });
+  a.prevCash = cash;
   const hc = n(d.month.hsd_cost), mc = n(d.month.ms_cost);
   if ((d.row.HSD && !hc) || (d.row.MS && !mc)) a.costMissingDays += 1;
   a.hsdCost += d.row.HSD * hc;
   a.msCost += d.row.MS * mc;
+  // Fuel sold at each rate (the rate can change between dates): units × that day's rate.
+  for (const fuel of ['HSD', 'MS']) {
+    const units = n(d.row[fuel]);
+    if (!units) continue;
+    const rate = n(d.row[`${fuel}_RATE`]);
+    const g = a.fuel[fuel].get(rate) || { rate, units: 0, amount: 0, from: d.date, to: d.date };
+    g.units += units; g.amount += n(d.row[`${fuel}_AMT`]); g.to = d.date;
+    a.fuel[fuel].set(rate, g);
+  }
   for (const l of d.lines) {
     if (l.side !== 'out' || l.col !== 'PEXP') continue;
     const key = String(l.label || '').toUpperCase().replace(/\s+/g, ' ').trim() || '(no label)';
@@ -86,6 +108,12 @@ function finish(a) {
     verified: a.verified,
     opening: round2(n(a.opening)),
     closing: round2(n(a.closing)),
+    firstDate: a.firstDate,
+    lastDate: a.lastDate,
+    lastCash: a.lastCash === null ? null : round2(n(a.lastCash)),
+    gaps: a.gaps,
+    fuelByRate: Object.fromEntries(['HSD', 'MS'].map((f) => [f, [...a.fuel[f].values()].sort((x, y) => x.from.localeCompare(y.from))
+      .map((g) => ({ rate: g.rate, units: round2(g.units), amount: round2(g.amount), from: g.from, to: g.to }))])),
     pl: {
       hsdSales: out.HSD_AMT, msSales: out.MS_AMT, lube: out.LUB, coffee: out.COFFEE, sales,
       hsdCost: round2(a.hsdCost), msCost: round2(a.msCost), cogs, gross,
@@ -149,4 +177,34 @@ async function ledger({ companyId, from, to, col, side, q }) {
   return { rows, inflow, outflow, count: rows.length };
 }
 
-module.exports = { report, ledger, periodOf };
+// Every open problem in a range, worked out fresh each time, so fixed ones disappear.
+async function issues({ companyId, from, to }) {
+  const days = await loadDays({ companyId, from, to });
+  const out = { checks: [], missing: [], undated: [], unverified: [] };
+  for (const d of days) {
+    for (const c of d.checks) {
+      if (c.status === 'error' || c.status === 'warn') {
+        out.checks.push({ date: d.date, entryId: d.id, company: d.month.company, check: c, lines: d.lines, checks: d.checks, locked: !!d.tally_batch_id });
+      }
+    }
+    if (d.status !== 'verified') out.unverified.push({ date: d.date, entryId: d.id, company: d.month.company, errors: d.errors, warnings: d.warnings });
+  }
+  // Missing days: in each month of the range, up to today (future days are not missing yet).
+  const params = [companyId];
+  const months = (await db.query('SELECT m.*, c.name AS company FROM months m JOIN companies c ON c.id = m.company_id WHERE m.company_id = $1 ORDER BY m.year, m.month', params)).rows;
+  const today = new Date().toISOString().slice(0, 10);
+  const have = new Set(days.map((d) => `${d.month.id}:${d.date}`));
+  for (const m of months) {
+    const last = new Date(m.year, m.month, 0).getDate();
+    for (let day = 1; day <= last; day++) {
+      const date = iso(m.year, m.month, day);
+      if ((from && date < from) || (to && date > to) || date > today) continue;
+      if (!have.has(`${m.id}:${date}`)) out.missing.push({ date, monthId: m.id, company: m.company });
+    }
+    const undated = (await db.query('SELECT id, image_name FROM entries WHERE month_id=$1 AND day IS NULL', [m.id])).rows;
+    for (const u of undated) out.undated.push({ entryId: u.id, monthId: m.id, image: u.image_name, company: m.company });
+  }
+  return out;
+}
+
+module.exports = { report, ledger, periodOf, issues };

@@ -132,3 +132,70 @@ async function buildCashflowWorkbook(title, rep) {
   return wb.xlsx.writeBuffer();
 }
 module.exports.buildCashflowWorkbook = buildCashflowWorkbook;
+
+// Cash reconciliation for a date range, laid out like the user's month-end sheet.
+async function buildReconWorkbook(title, t) {
+  const wb = new ExcelJS.Workbook();
+  const ws = wb.addWorksheet('Cash reconciliation');
+  ws.getCell('A1').value = title;
+  ws.getCell('A1').font = { bold: true, size: 13 };
+  const head = ws.getRow(2);
+  ['', 'Unit', 'Rate', 'Amount', '', 'Particulars', 'Amount'].forEach((v, i) => { head.getCell(i + 1).value = v || null; });
+  head.font = { bold: true };
+
+  // One row per selling rate, so a mid-month price change is shown as it happened.
+  const fuelRows = (fuel) => {
+    const list = (t.fuelByRate && t.fuelByRate[fuel]) || [];
+    if (!list.length) return [[fuel, null, null, null]];
+    return list.map((g) => [list.length > 1 ? `${fuel} (${g.from.split('-').reverse().join('-')} to ${g.to.split('-').reverse().join('-')})` : fuel, g.units, g.rate, null]);
+  };
+  const left = [
+    ['Opening Cash', null, null, t.opening],
+    ...fuelRows('HSD'),
+    ...fuelRows('MS'),
+    ['Coffee', null, null, t.COFFEE || null],
+    ['Lubricant', null, null, t.LUB || null],
+    ['Collection', null, null, t.COLL || null],
+  ];
+  const right = [
+    ['Bank', t.BANK], ['PTM', t.PTM], ['UPI', t.UPI], ['Tankar Sale', t.TSALE],
+    ...(t.FLEET ? [['Fleet', t.FLEET]] : []),
+    ['Ranjit Ji', t.RANJIT], ['Rajeshwar Babu', t.RBABU], ['Others', t.OTHERS], ['Pump Expenses', t.PEXP],
+  ];
+  const rows = Math.max(left.length, right.length) + 2;
+  for (let i = 0; i < rows; i++) {
+    const r = 3 + i;
+    const l = left[i];
+    if (l) {
+      ws.getCell(`A${r}`).value = l[0];
+      ws.getCell(`B${r}`).value = l[1];
+      ws.getCell(`C${r}`).value = l[2];
+      // HSD/MS amount = units × rate, as in the daily sheet
+      ws.getCell(`D${r}`).value = l[1] && l[2] ? { formula: `ROUND(B${r}*C${r},2)` } : l[3];
+    }
+    const g = right[i];
+    if (g) { ws.getCell(`F${r}`).value = g[0]; ws.getCell(`G${r}`).value = g[1] || null; }
+  }
+  const last = 3 + rows - 1;
+  const tr = last + 2;
+  ws.getCell(`A${tr}`).value = 'Total';
+  ws.getCell(`D${tr}`).value = { formula: `SUM(D3:D${last})` };
+  ws.getCell(`F${tr}`).value = 'Total';
+  ws.getCell(`G${tr}`).value = { formula: `SUM(G3:G${last})` };
+  ws.getRow(tr).font = { bold: true };
+  ws.getCell(`F${tr + 2}`).value = 'Cash Balance';
+  ws.getCell(`G${tr + 2}`).value = { formula: `D${tr}-G${tr}` };
+  ws.getCell(`F${tr + 2}`).font = ws.getCell(`G${tr + 2}`).font = { bold: true };
+  if (t.lastCash !== null && t.lastCash !== undefined) {
+    ws.getCell(`F${tr + 3}`).value = `Cash in hand on image (${t.lastDate})`;
+    ws.getCell(`G${tr + 3}`).value = t.lastCash;
+    ws.getCell(`F${tr + 4}`).value = 'Difference';
+    ws.getCell(`G${tr + 4}`).value = { formula: `G${tr + 3}-G${tr + 2}` };
+  }
+  for (let r = 2; r <= last; r++) for (const c of ['A', 'B', 'C', 'D', 'F', 'G']) ws.getCell(`${c}${r}`).border = { top: { style: 'thin' }, bottom: { style: 'thin' }, left: { style: 'thin' }, right: { style: 'thin' } };
+  ws.columns = [{ width: 16 }, { width: 12 }, { width: 10 }, { width: 16 }, { width: 3 }, { width: 30 }, { width: 16 }];
+  for (const c of ['B', 'C', 'D', 'G']) ws.getColumn(c).numFmt = '0.00';
+  wb.calcProperties = { fullCalcOnLoad: true };
+  return wb.xlsx.writeBuffer();
+}
+module.exports.buildReconWorkbook = buildReconWorkbook;

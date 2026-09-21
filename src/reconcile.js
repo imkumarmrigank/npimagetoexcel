@@ -95,6 +95,7 @@ function buildMonth(month, entries) {
       report_date: e.report_date,
       image_name: e.image_name,
       source: e.source || 'image',
+      tally_batch_id: e.tally_batch_id || null,
       status: e.status,
       row: { ...row, openingUsed, L, closing, CASH: e.printed?.cash_in_hand ?? null },
       checks,
