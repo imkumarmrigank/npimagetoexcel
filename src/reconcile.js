@@ -96,7 +96,7 @@ function buildMonth(month, entries) {
       image_name: e.image_name,
       source: e.source || 'image',
       status: e.status,
-      row: { ...row, openingUsed, L, closing },
+      row: { ...row, openingUsed, L, closing, CASH: e.printed?.cash_in_hand ?? null },
       checks,
       errors: checks.filter((c) => c.status === 'error').length,
       warnings: checks.filter((c) => c.status === 'warn').length,

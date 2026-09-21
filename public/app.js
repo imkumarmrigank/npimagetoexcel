@@ -184,13 +184,13 @@ const COLS = [
   ['K', 'Collection', 'COLL', 'in'], ['L', 'Total', 'L'], ['M', 'T-Exp', 'M', 'out'], ['N', 'Bank', 'BANK', 'out'], ['O', 'PTM', 'PTM', 'out'],
   ['P', 'UPI', 'UPI', 'out'], ['Q', 'T-Sale', 'TSALE', 'out'], ['R', 'Fleet', 'FLEET', 'out'], ['S', 'R-Babu', 'RBABU', 'out'],
   ['T', 'Ranjit', 'RANJIT', 'out'], ['U', 'Others', 'OTHERS', 'out'], ['V', 'Total', 'V', 'out'], ['W', 'P-Exp', 'PEXP', 'out'],
-  ['X', 'Total', 'M', 'out'], ['Y', 'Balance', 'closing'],
+  ['X', 'Total', 'M', 'out'], ['Y', 'Balance', 'closing'], ['Z', 'Cash in hand (image)', 'CASH'],
 ];
 
 function renderSummary() {
   const s = state.summary;
   $('#sheetTitle').textContent = s.month.title;
-  $('#monthChecks').innerHTML = s.monthChecks.map(checkLi).join('');
+  $('#monthChecks').innerHTML = s.monthChecks.map((c) => checkLi(c) + (c.status !== 'ok' && MONTH_FIX[c.id] ? `<li class="hint-li"><span></span><div class="d">↳ ${MONTH_FIX[c.id]}</div></li>` : '')).join('');
   const t = s.totals;
   $('#totalsStrip').innerHTML = [
     ['HSD litres', t.HSD], ['HSD amount', t.HSD_AMT], ['MS litres', t.MS], ['MS amount', t.MS_AMT], ['Collection', t.COLL],
@@ -207,7 +207,7 @@ function renderSummary() {
       if (c.status !== 'error') continue;
       if (c.id === 'inflow') ['L'].forEach((x) => bad.add(x));
       if (c.id === 'expense') ['M', 'X'].forEach((x) => bad.add(x));
-      if (c.id === 'cash') bad.add('Y');
+      if (c.id === 'cash') bad.add('Z');
       if (c.id === 'HSD_amt') ['C', 'E'].forEach((x) => bad.add(x));
       if (c.id === 'MS_amt') ['F', 'H'].forEach((x) => bad.add(x));
       if (c.id === 'date') bad.add('A');
@@ -227,6 +227,7 @@ function renderSummary() {
     if (c === 'B') return `<td>${fmt(t.OB)}</td>`;
     if (c === 'L') return `<td>${fmt(t.inflow)}</td>`;
     if (c === 'Y') return `<td>${fmt(t.closing)}</td>`;
+    if (c === 'Z') return '<td></td>';
     if (c === 'D' || c === 'G') return '<td></td>';
     return `<td>${fmt(t[k])}</td>`;
   }).join('')}<td></td></tr></tfoot>`;
@@ -299,6 +300,86 @@ async function enterManually(date) {
   } catch (e) { toast(e.message); }
 }
 $('#manualBtn').onclick = () => enterManually($('#manualDate').value);
+
+// ---------- why a check failed, and how to fix it ----------
+const MONTH_FIX = {
+  days: 'Upload the image for each missing day, or use “Enter manually” on that day’s row if you have no image.',
+  undated: 'Open the image marked “?” in the sheet and set its Day.',
+  dups: 'Two entries share a date. Open that day, check which image is right, and delete the other (or fix its day).',
+  imgchecks: 'Open each row with a red bar and follow “Why and how to fix” at the bottom of the form.',
+  verified: 'After a day’s figures match its image, press “Save & mark verified”.',
+  balance: 'Usually caused by an undated or duplicate day; fix those first.',
+};
+
+// Clues from the size of a difference: which row, a misread digit, or swapped digits.
+function diffClues(diff, lines) {
+  const a = Math.abs(diff);
+  const clues = [];
+  const same = lines.filter((l) => Math.abs(Math.abs(Number(l.amount) || 0) - a) <= 1);
+  if (same.length) clues.push(`It equals the row “${same[0].label}” (${fmt(same[0].amount)}) — that row may be missing from, or counted twice in, the image’s total.`);
+  if (a >= 1000 && a % 1000 < 1) clues.push(`It is almost exactly ${fmt(Math.round(a / 1000) * 1000, 0)} — typically one digit of one amount is different (e.g. 19,999 vs 39,999). Compare the thousands digits of each row with the image.`);
+  const whole = Math.round(a);
+  if (whole >= 9 && whole % 9 === 0 && Math.abs(a - whole) < 0.01) clues.push('It divides exactly by 9 — often two digits were swapped (e.g. 45 ↔ 54) in one amount.');
+  if (a < 1.5) clues.push('It is under ₹1.50 — probably rounding on the image; you can mark the day verified.');
+  return clues;
+}
+
+function explain(c, e) {
+  const d = Math.abs(c.diff ?? 0);
+  const side = (s) => e.lines.filter((l) => l.side === s);
+  switch (c.id) {
+    case 'date':
+      return { why: c.detail || 'The day is missing or used twice.', fix: 'Set the correct Day (it is printed on the image). If this image is a duplicate of another day, delete it.' };
+    case 'inflow':
+      return {
+        why: `The inflow rows add up to ${fmt(c.actual)}, but the image’s Total Inflow is ${fmt(c.expected)} (difference ${fmt(d)}). Either a row is missing or typed wrong here, or the image’s own total is wrong.`,
+        fix: 'Compare every inflow row with the image and correct the amount, or add the missing row with “+ line”. If every row matches the image exactly, the image’s total is wrong: write the correct total in “Printed total inflow”, or mark the day verified to accept it.',
+        clues: diffClues(c.diff, side('in')),
+      };
+    case 'expense':
+      return {
+        why: `The expense rows add up to ${fmt(c.actual)}, but the image’s Total Expenses is ${fmt(c.expected)} (difference ${fmt(d)}). ${c.actual < c.expected ? 'Something is missing here or an amount is lower than on the image' : 'An amount here is higher than on the image, or a row is repeated'} — or the image’s own total is wrong.`,
+        fix: 'Go down the expense list against the image. Correct any amount, add a missing row with “+ line”, or remove a repeated one. If all rows match the image exactly, the mistake is in the image’s total: correct “Printed total expenses” (or mark verified after checking with the pump).',
+        clues: diffClues(c.diff, side('out')),
+      };
+    case 'cash':
+      return {
+        why: `Inflow − expenses from the rows gives ${fmt(c.actual)}, but the image says cash in hand is ${fmt(c.expected)} (difference ${fmt(d)}).`,
+        fix: e.computed?.checks.some((x) => (x.id === 'inflow' || x.id === 'expense') && x.status === 'error')
+          ? 'This follows from the inflow/expense mismatch above — fix that first and this usually clears.'
+          : 'The rows balance but the printed cash in hand does not: check “Printed cash in hand” against the image, or the cash counted on the day.',
+      };
+    case 'HSD_amt':
+    case 'MS_amt': {
+      const fuel = c.id === 'HSD_amt' ? 'HSD' : 'MS';
+      return {
+        why: `${fuel} units × rate gives ${fmt(c.actual)}, but the amount is ${fmt(c.expected)} (difference ${fmt(d)}).`,
+        fix: `Check the ${fuel} units and rate against the image (this month’s rate is ${fmt(fuel === 'HSD' ? state.summary?.month?.hsd_rate : state.summary?.month?.ms_rate) || 'not set'}). The sheet uses units × rate, so the units must be right.`,
+      };
+    }
+    case 'ob':
+      return {
+        why: `${c.detail}. The day should open with the cash the previous day ended with.`,
+        fix: 'If the opening cash was typed or read wrong, correct it to match the image. If the image really shows this (cash added or taken out overnight, or rounding), press “Accept difference”.',
+      };
+    default:
+      return null;
+  }
+}
+
+function renderHowFix(computed) {
+  const box = $('#howFix');
+  const items = (computed?.checks || []).filter((c) => c.status === 'error' || c.status === 'warn').map((c) => ({ c, x: explain(c, state.entry) })).filter((i) => i.x);
+  box.classList.toggle('hidden', !items.length);
+  box.innerHTML = items.length
+    ? `<h4>Why and how to fix</h4>${items.map(({ c, x }) => `<div class="fix-item ${c.status}">
+        <div class="fix-title">${badge(c.status)} ${esc(c.label)}</div>
+        <div><b>Why:</b> ${esc(x.why)}</div>
+        <div><b>How to fix:</b> ${esc(x.fix)}</div>
+        ${x.clues?.length ? `<ul>${x.clues.map((k) => `<li>${esc(k)}</li>`).join('')}</ul>` : ''}
+      </div>`).join('')}`
+    : '';
+}
 
 // ---------- review ----------
 const reviewDlg = $('#review');
@@ -446,8 +527,9 @@ function renderComputed(c) {
   $('#rChecks').innerHTML = c ? c.checks.map(checkLi).join('') : '';
   if (!c) { $('#rRow').innerHTML = ''; return; }
   const r = c.row;
+  renderHowFix(c);
   $('#rRow').innerHTML = [['OB', r.openingUsed], ['HSD', r.HSD], ['Rate', r.HSD_RATE], ['MS', r.MS], ['Rate', r.MS_RATE], ['Lub', r.LUB], ['Cofee', r.COFFEE], ['Collection', r.COLL],
-    ['T-Exp', r.M], ['Bank', r.BANK], ['PTM', r.PTM], ['UPI', r.UPI], ['T-Sale', r.TSALE], ['Fleet', r.FLEET], ['R-Babu', r.RBABU], ['Ranjit', r.RANJIT], ['Others', r.OTHERS], ['P-Exp', r.PEXP], ['Balance', r.closing]]
+    ['T-Exp', r.M], ['Bank', r.BANK], ['PTM', r.PTM], ['UPI', r.UPI], ['T-Sale', r.TSALE], ['Fleet', r.FLEET], ['R-Babu', r.RBABU], ['Ranjit', r.RANJIT], ['Others', r.OTHERS], ['P-Exp', r.PEXP], ['Balance (carried)', r.closing], ['Cash in hand (image)', r.CASH]]
     .filter(([, v]) => Number(v)).map(([k, v]) => `<div><b>${k}</b>${fmt(v)}</div>`).join('');
 }
 

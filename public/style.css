@@ -152,3 +152,11 @@ input.warn { background: var(--warn-bg); border-color: #e3b341; }
 .pl tr.clickable:hover td { background: var(--row-hover); }
 .warn-list { margin-top: 10px; background: var(--warn-bg); border: 1px solid #e3b341; color: var(--warn); border-radius: 8px; padding: 8px 12px; font-size: 12px; display: grid; gap: 4px; justify-items: start; }
 .warn-list button { margin-top: 4px; }
+.how-fix { margin-top: 16px; display: grid; gap: 8px; }
+.how-fix h4 { margin: 0; }
+.fix-item { border-radius: 8px; padding: 10px 12px; font-size: 12.5px; line-height: 1.5; display: grid; gap: 4px; }
+.fix-item.error { background: #fff1f0; border: 1px solid #f3b3ae; }
+.fix-item.warn { background: var(--warn-bg); border: 1px solid #e3b341; }
+.fix-item ul { margin: 2px 0 0; padding-left: 18px; color: var(--muted); }
+.fix-title { font-weight: 600; display: flex; gap: 6px; align-items: center; }
+.checks li.hint-li { border-bottom: 0; padding-top: 0; }
