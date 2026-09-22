@@ -33,7 +33,7 @@ async function loadDays({ companyId, from, to }) {
   if (companyId) { params.push(companyId); where += ` AND m.company_id = $${params.length}`; }
   if (from) { params.push(from.slice(0, 7) + '-01'); where += ` AND make_date(m.year, m.month, 1) >= $${params.length}::date`; }
   if (to) { params.push(to); where += ` AND make_date(m.year, m.month, 1) <= $${params.length}::date`; }
-  const months = (await db.query(`SELECT m.*, c.name AS company FROM months m JOIN companies c ON c.id = m.company_id WHERE ${where} ORDER BY m.year, m.month`, params)).rows;
+  const months = (await db.query(`SELECT m.*, c.name AS company, c.coll_excluded, c.others_excluded FROM months m JOIN companies c ON c.id = m.company_id WHERE ${where} ORDER BY m.year, m.month`, params)).rows;
   if (!months.length) return [];
   const entries = (await db.query('SELECT id, month_id, day, report_date, lines, printed, status, source, tally_batch_id FROM entries WHERE month_id = ANY($1)', [months.map((m) => m.id)])).rows;
   const days = [];
@@ -70,7 +70,7 @@ const SUM_KEYS = ['HSD', 'HSD_AMT', 'MS', 'MS_AMT', 'LUB', 'COFFEE', 'COLL', 'M'
 
 function emptyAgg() {
   const a = Object.fromEntries(SUM_KEYS.map((k) => [k, 0]));
-  return { ...a, days: 0, verified: 0, hsdCost: 0, msCost: 0, estimatedDays: 0, opening: null, closing: null, firstDate: null, lastDate: null, lastCash: null, pexp: new Map(), prevCash: null, gaps: [], fuel: { HSD: new Map(), MS: new Map() } };
+  return { ...a, days: 0, verified: 0, hsdCost: 0, msCost: 0, estimatedDays: 0, opening: null, closing: null, firstDate: null, lastDate: null, lastCash: null, pexp: new Map(), coll: new Map(), others: new Map(), otherIncome: 0, otherPayments: 0, prevCash: null, gaps: [], fuel: { HSD: new Map(), MS: new Map() } };
 }
 
 function addDay(a, d) {
@@ -108,10 +108,22 @@ function addDay(a, d) {
     g.units += units; g.amount += n(d.row[`${fuel}_AMT`]); g.to = d.date;
     a.fuel[fuel].set(rate, g);
   }
+  // Item-wise operating expenses; collections (cash received that isn't a fuel/lube/coffee sale)
+  // count as income and "Others" payments (returns, CSP paid out…) as costs, unless the company
+  // left a head out of the P&L.
+  const collOut = new Set(d.month.coll_excluded || []);
+  const othersOut = new Set(d.month.others_excluded || []);
   for (const l of d.lines) {
-    if (l.side !== 'out' || l.col !== 'PEXP') continue;
     const key = String(l.label || '').toUpperCase().replace(/\s+/g, ' ').trim() || '(no label)';
-    a.pexp.set(key, (a.pexp.get(key) || 0) + n(l.amount));
+    if (l.side === 'out' && l.col === 'PEXP') a.pexp.set(key, (a.pexp.get(key) || 0) + n(l.amount));
+    if (l.side === 'in' && l.col === 'COLL') {
+      a.coll.set(key, (a.coll.get(key) || 0) + n(l.amount));
+      if (!collOut.has(key)) a.otherIncome += n(l.amount);
+    }
+    if (l.side === 'out' && l.col === 'OTHERS') {
+      a.others.set(key, (a.others.get(key) || 0) + n(l.amount));
+      if (!othersOut.has(key)) a.otherPayments += n(l.amount);
+    }
   }
 }
 
@@ -136,7 +148,11 @@ function finish(a) {
     pl: {
       hsdSales: out.HSD_AMT, msSales: out.MS_AMT, lube: out.LUB, coffee: out.COFFEE, sales,
       hsdCost: round2(a.hsdCost), msCost: round2(a.msCost), cogs, gross,
-      expenses: out.PEXP, net: round2(gross - out.PEXP), costMissingDays: 0, estimatedDays: a.estimatedDays, commission: DEALER_COMMISSION,
+      otherIncome: round2(a.otherIncome),
+      otherPayments: round2(a.otherPayments),
+      collectionLines: [...a.coll.entries()].map(([label, amount]) => ({ label, amount: round2(amount) })).sort((x, y) => y.amount - x.amount),
+      othersLines: [...a.others.entries()].map(([label, amount]) => ({ label, amount: round2(amount) })).sort((x, y) => y.amount - x.amount),
+      expenses: out.PEXP, net: round2(gross + a.otherIncome - out.PEXP - a.otherPayments), costMissingDays: 0, estimatedDays: a.estimatedDays, commission: DEALER_COMMISSION,
       expenseLines: [...a.pexp.entries()].map(([label, amount]) => ({ label, amount: round2(amount) })).sort((x, y) => y.amount - x.amount),
     },
     cash: {

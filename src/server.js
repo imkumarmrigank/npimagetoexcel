@@ -90,6 +90,14 @@ app.post('/api/companies', wrap(async (req, res) => {
   }
   res.json(r.rows[0]);
 }));
+// Heads left out of this company's P&L (collections not counted as income, Others payments not counted as costs).
+app.put('/api/companies/:id/pl-excluded', wrap(async (req, res) => {
+  const clean = (list) => JSON.stringify([...new Set((list || []).map((h) => String(h).toUpperCase().replace(/\s+/g, ' ').trim()).filter(Boolean))]);
+  const r = await db.query('UPDATE companies SET coll_excluded=$2, others_excluded=$3 WHERE id=$1 RETURNING coll_excluded, others_excluded',
+    [req.params.id, clean(req.body.coll), clean(req.body.others)]);
+  if (!r.rowCount) throw fail(404, 'Company not found');
+  res.json(r.rows[0]);
+}));
 app.patch('/api/companies/:id', wrap(async (req, res) => {
   const name = String(req.body.name || '').trim();
   if (!name) throw fail(400, 'Company name is required');

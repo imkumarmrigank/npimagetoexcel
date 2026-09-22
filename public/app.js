@@ -808,14 +808,52 @@ async function runReport() {
       That is about ₹${(c.MS.perKl / 1000 + (c.MS.pct / 100) * 113.77 * c.billableShare).toFixed(2)}/L on MS and ₹${(c.HSD.perKl / 1000 + (c.HSD.pct / 100) * 99.76 * c.billableShare).toFixed(2)}/L on HSD at this month's rates.
       ${form.company_id.value ? 'For exact profit, enter your actual purchase cost or margin per litre below (from the purchase invoices).' : 'Pick one company to enter its actual purchase costs.'}</div>
       ${form.company_id.value ? '<div id="costEditor"></div>' : ''}`;
+    // Expandable rows: a ＋ opens the item-wise lines under a total, with an amount per period.
+    // Collections and "Others" payments have a tick per head to count it in the P&L or leave it out.
+    const one = !!form.company_id.value;
+    const collOut = new Set(one ? (company()?.coll_excluded || []) : []);
+    const othersOut = new Set(one ? (company()?.others_excluded || []) : []);
+    const itemAmt = (p, list, label) => (list(p).find((i) => i.label === label) || {}).amount || 0;
+    const groupRows = (id, label, total, list, toggle = null) => {
+      const items = list(t.pl);
+      if (!items.length) return plRow(label, total);
+      return `<tr class="group" data-group="${id}"><td><button type="button" class="expand" data-toggle="${id}" aria-expanded="false" title="Show item-wise">＋</button> ${label} <span class="muted small">(${items.length} items)</span></td>
+        ${r.rows.map((x) => `<td>${money(total(x.pl))}</td>`).join('')}<td>${money(total(t.pl))}</td></tr>
+        ${items.map((it) => `<tr class="item hidden" data-parent="${id}"><td>${esc(it.label)}${toggle && one
+          ? ` <label class="small inc-toggle"><input type="checkbox" data-pl="${toggle.kind}" data-head="${esc(it.label)}" ${toggle.checked(it.label) ? 'checked' : ''}> ${toggle.text}</label>` : ''}</td>
+          ${r.rows.map((x) => `<td>${fmt(itemAmt(x.pl, list, it.label)) || ''}</td>`).join('')}<td>${fmt(it.amount)}</td></tr>`).join('')}`;
+    };
+    const sumOf = (list) => list.reduce((x, c) => x + c.amount, 0);
+    const collIn = (p) => p.collectionLines.filter((c) => !collOut.has(c.label));
+    const collLeft = (p) => p.collectionLines.filter((c) => collOut.has(c.label));
+    const othIn = (p) => p.othersLines.filter((c) => !othersOut.has(c.label));
+    const othLeft = (p) => p.othersLines.filter((c) => othersOut.has(c.label));
+    const collToggle = { kind: 'coll', text: 'count as income', checked: (h) => !collOut.has(h) };
+    const othToggle = { kind: 'others', text: 'count as cost', checked: (h) => !othersOut.has(h) };
+    const otherIncomeRows = groupRows('coll', 'Add: collection income (tank sell / CSP / other)', (p) => sumOf(collIn(p)), collIn, collToggle);
+    const otherPaymentRows = groupRows('oth', 'Less: other payments (Others — returns, CSP paid out…)', (p) => sumOf(othIn(p)), othIn, othToggle);
+    const leftOut = collLeft(t.pl).length + othLeft(t.pl).length;
     const pl = `<div class="card"><h3>Profit &amp; Loss</h3>${costNote}<div class="table-wrap"><table class="pl">
       <thead><tr><th>Particulars</th>${r.rows.map((x) => `<th>${colName(x)}</th>`).join('')}<th>Total</th></tr></thead><tbody>
       ${plRow('HSD sales', (p) => p.hsdSales)}${plRow('MS sales', (p) => p.msSales)}${plRow('Lube', (p) => p.lube)}${plRow('Coffee', (p) => p.coffee)}
       ${plRow('Total sales', (p) => p.sales, 'sub')}
       ${plRow('Less: HSD purchase cost', (p) => p.hsdCost)}${plRow('Less: MS purchase cost', (p) => p.msCost)}
       ${plRow('Gross profit / loss', (p) => p.gross, 'sub', true)}
-      ${plRow('Less: operating expenses (P-Exp)', (p) => p.expenses)}
+      ${otherIncomeRows}
+      ${groupRows('pexp', 'Less: operating expenses (P-Exp)', (p) => p.expenses, (p) => p.expenseLines)}
+      ${otherPaymentRows}
       ${plRow('Net profit / loss', (p) => p.net, 'net', true)}
+      </tbody>
+      <tbody class="memo">
+      <tr class="memo-head"><td colspan="${r.rows.length + 2}">Collections and “Others” payments ${leftOut ? `— ${leftOut} head(s) left out of profit` : 'are counted in profit'}
+        <button type="button" class="small ghost" id="whyColl">How this works</button></td></tr>
+      <tr class="memo-why hidden"><td colspan="${r.rows.length + 2}">
+        <b>Collection</b> (tank sell, CSP, Cyber, Nitesh, money from parties…) is counted as income. Money that goes back out under the
+        <b>Others</b> column (Cyber return, Nitesh return, CSP paid out, gas agency, Dr Sahab…) is counted as a cost, so money that only passes
+        through the pump doesn't show as profit. Open either line with ＋ and untick a head to leave it out — for example a loan received, or
+        its repayment. Your choice is saved for this company.</td></tr>
+      ${collLeft(t.pl).length ? groupRows('collx', 'Collections left out of profit', (p) => sumOf(collLeft(p)), collLeft, collToggle) : ''}
+      ${othLeft(t.pl).length ? groupRows('othx', '“Others” payments left out of profit', (p) => sumOf(othLeft(p)), othLeft, othToggle) : ''}
       </tbody></table></div></div>`;
 
     const summary = `<div class="card"><h3>Summary by ${esc(form.group.selectedOptions[0].text.toLowerCase())}</h3><div class="table-wrap"><table class="sheet">
@@ -837,6 +875,29 @@ async function runReport() {
 
     $('#reportOut').innerHTML = `<div class="card"><div class="muted small">${esc(r.from || '')} to ${esc(r.to || '')} · ${t.days} day(s), ${t.verified} verified</div><div class="totals">${tiles}</div></div>${pl}${companies}${summary}${expenses}`;
     if ($('#costEditor')) renderCostEditor(Number(form.company_id.value), r.from, r.to);
+    $('#reportOut').querySelectorAll('[data-toggle]').forEach((b) => {
+      b.onclick = () => {
+        const open = b.getAttribute('aria-expanded') !== 'true';
+        b.setAttribute('aria-expanded', String(open));
+        b.textContent = open ? '－' : '＋';
+        $('#reportOut').querySelectorAll(`tr[data-parent="${b.dataset.toggle}"]`).forEach((tr) => tr.classList.toggle('hidden', !open));
+      };
+    });
+    $('#whyColl')?.addEventListener('click', () => $('#reportOut .memo-why').classList.toggle('hidden'));
+    $('#reportOut').querySelectorAll('[data-pl]').forEach((cb) => {
+      cb.onchange = async () => {
+        const c = company();
+        const coll = new Set(c.coll_excluded || []), others = new Set(c.others_excluded || []);
+        const set = cb.dataset.pl === 'coll' ? coll : others;
+        if (cb.checked) set.delete(cb.dataset.head); else set.add(cb.dataset.head);
+        try {
+          const res = await api(`/api/companies/${state.companyId}/pl-excluded`, { method: 'PUT', body: { coll: [...coll], others: [...others] } });
+          c.coll_excluded = res.coll_excluded; c.others_excluded = res.others_excluded;
+          toast(`${cb.dataset.head} ${cb.checked ? 'counted in' : 'left out of'} profit`);
+          runReport();
+        } catch (e) { toast(e.message); }
+      };
+    });
   } catch (e) { $('#reportOut').innerHTML = `<div class="card err">${esc(e.message)}</div>`; }
 }
 

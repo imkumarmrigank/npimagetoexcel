@@ -57,6 +57,8 @@ function styleHeader(row) {
   row.eachCell((c) => { c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE9EEF5' } }; });
 }
 
+const round2x = (v) => Math.round(v * 100) / 100;
+
 async function buildReportWorkbook(title, rep, withCompany) {
   const wb = new ExcelJS.Workbook();
   const ws = wb.addWorksheet('Summary');
@@ -88,12 +90,27 @@ async function buildReportWorkbook(title, rep, withCompany) {
   line('Total sales', (p) => p.sales, true);
   line('Less: HSD purchase cost', (p) => p.hsdCost);
   line('Less: MS purchase cost', (p) => p.msCost);
-  line('Gross profit', (p) => p.gross, true);
+  line('Gross profit / loss', (p) => p.gross, true);
+  // Item-wise lines under a total, one column per period like the lines above.
+  const item = (list, label) => (list.find((i) => i.label === label) || {}).amount || null;
+  const detail = (list, pick) => {
+    for (const e of pick(rep.total.pl)) {
+      pl.addRow([`    ${e.label}`, ...rep.rows.map((r) => item(pick(r.pl), e.label)), e.amount]).font = { color: { argb: 'FF6B7280' } };
+    }
+  };
+  line('Add: collection income (tank sell / CSP / other)', (p) => p.otherIncome);
+  detail(null, (p) => p.collectionLines);
   line('Less: operating expenses (P-Exp)', (p) => p.expenses);
-  line('Net profit', (p) => p.net, true);
+  detail(null, (p) => p.expenseLines);
+  line('Less: other payments (Others — returns, CSP paid out…)', (p) => p.otherPayments);
+  detail(null, (p) => p.othersLines);
+  line('Net profit / loss', (p) => p.net, true);
+  const left = round2x(rep.total.pl.collectionLines.reduce((x, c) => x + c.amount, 0) - rep.total.pl.otherIncome)
+    + round2x(rep.total.pl.othersLines.reduce((x, c) => x + c.amount, 0) - rep.total.pl.otherPayments);
   pl.addRow([]);
-  styleHeader(pl.addRow(['Operating expenses (whole period)', 'Amount']));
-  for (const e of rep.total.pl.expenseLines) pl.addRow([e.label, e.amount]);
+  pl.addRow([left
+    ? 'Some collection / Others heads were left out of profit in the app; the item lists above show every head, the totals only the counted ones.'
+    : 'Collections count as income and Others payments as costs, so money that only passes through the pump is not profit. Heads can be left out in the app.']).font = { italic: true, color: { argb: 'FF6B7280' } };
   pl.columns.forEach((c, i) => { c.width = i === 0 ? 36 : 16; if (i > 0) c.numFmt = '#,##0.00'; });
   return wb.xlsx.writeBuffer();
 }
