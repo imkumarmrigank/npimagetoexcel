@@ -72,6 +72,10 @@ async function buildReportWorkbook(title, rep, withCompany) {
   const pl = wb.addWorksheet('Profit & Loss');
   pl.addRow([`${title} — Profit & Loss`]).font = { bold: true, size: 13 };
   pl.addRow([`${rep.from || ''} to ${rep.to || ''}`]);
+  if (rep.total.pl.estimatedDays) {
+    const c = rep.total.pl.commission;
+    pl.addRow([`ESTIMATED for ${rep.total.pl.estimatedDays} day(s): fuel cost = selling rate − standard dealer commission (PPAC, from ${c.effective}: MS Rs ${c.MS.perKl}/KL + ${c.MS.pct}%, HSD Rs ${c.HSD.perKl}/KL + ${c.HSD.pct}% of billable price, taken as ${Math.round(c.billableShare * 100)}% of selling rate). Enter actual purchase costs for exact figures.`]).font = { italic: true, color: { argb: 'FF9A6200' } };
+  }
   styleHeader(pl.addRow(['Particulars', ...rep.rows.map((r) => (withCompany ? `${r.label} ${r.company}` : r.label)), 'Total']));
   const line = (label, get, bold) => {
     const row = pl.addRow([label, ...rep.rows.map((r) => get(r.pl)), get(rep.total.pl)]);

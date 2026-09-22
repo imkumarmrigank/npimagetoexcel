@@ -50,11 +50,27 @@ async function loadDays({ companyId, from, to }) {
   return days.sort((a, b) => a.date.localeCompare(b.date) || a.month.company.localeCompare(b.month.company));
 }
 
+// Dealer commission published by PPAC (Government of India), effective 1 Dec 2024:
+// fixed Rs per kilolitre + a percentage of the product billable price. The billable price is not
+// on the daily reports, so it is taken as a share of the selling rate; this makes it an estimate.
+const DEALER_COMMISSION = {
+  effective: '2024-12-01',
+  source: 'https://ppac.gov.in/prices/dealers-distributors-commission-on-petrol-diesel-pds-kerosene-domestic-lpg',
+  billableShare: 0.6,
+  MS: { perKl: 3144.03, pct: 0.870 },
+  HSD: { perKl: 2332.51, pct: 0.266 },
+};
+function estimatedMargin(fuel, rate) {
+  const c = DEALER_COMMISSION[fuel];
+  return c.perKl / 1000 + (c.pct / 100) * n(rate) * DEALER_COMMISSION.billableShare;
+}
+const estimatedCost = (fuel, rate) => (n(rate) ? n(rate) - estimatedMargin(fuel, rate) : 0);
+
 const SUM_KEYS = ['HSD', 'HSD_AMT', 'MS', 'MS_AMT', 'LUB', 'COFFEE', 'COLL', 'M', ...EXPENSE_COLS.map((c) => c.key), 'V'];
 
 function emptyAgg() {
   const a = Object.fromEntries(SUM_KEYS.map((k) => [k, 0]));
-  return { ...a, days: 0, verified: 0, hsdCost: 0, msCost: 0, costMissingDays: 0, opening: null, closing: null, firstDate: null, lastDate: null, lastCash: null, pexp: new Map(), prevCash: null, gaps: [], fuel: { HSD: new Map(), MS: new Map() } };
+  return { ...a, days: 0, verified: 0, hsdCost: 0, msCost: 0, estimatedDays: 0, opening: null, closing: null, firstDate: null, lastDate: null, lastCash: null, pexp: new Map(), prevCash: null, gaps: [], fuel: { HSD: new Map(), MS: new Map() } };
 }
 
 function addDay(a, d) {
@@ -76,10 +92,13 @@ function addDay(a, d) {
   const e = round2(cash - calc);
   if (Math.abs(e) >= 0.01) a.gaps.push({ date: d.date, kind: 'day', amount: e, company: d.month.company });
   a.prevCash = cash;
+  // Purchase cost per litre: the month's actual figure when entered, otherwise the
+  // standard dealer commission (PPAC) taken off that day's selling rate — an estimate.
   const hc = n(d.month.hsd_cost), mc = n(d.month.ms_cost);
-  if ((d.row.HSD && !hc) || (d.row.MS && !mc)) a.costMissingDays += 1;
-  a.hsdCost += d.row.HSD * hc;
-  a.msCost += d.row.MS * mc;
+  const estimated = (d.row.HSD && !hc) || (d.row.MS && !mc);
+  if (estimated) a.estimatedDays += 1;
+  a.hsdCost += d.row.HSD * (hc || estimatedCost('HSD', d.row.HSD_RATE));
+  a.msCost += d.row.MS * (mc || estimatedCost('MS', d.row.MS_RATE));
   // Fuel sold at each rate (the rate can change between dates): units × that day's rate.
   for (const fuel of ['HSD', 'MS']) {
     const units = n(d.row[fuel]);
@@ -117,7 +136,7 @@ function finish(a) {
     pl: {
       hsdSales: out.HSD_AMT, msSales: out.MS_AMT, lube: out.LUB, coffee: out.COFFEE, sales,
       hsdCost: round2(a.hsdCost), msCost: round2(a.msCost), cogs, gross,
-      expenses: out.PEXP, net: round2(gross - out.PEXP), costMissingDays: a.costMissingDays,
+      expenses: out.PEXP, net: round2(gross - out.PEXP), costMissingDays: 0, estimatedDays: a.estimatedDays, commission: DEALER_COMMISSION,
       expenseLines: [...a.pexp.entries()].map(([label, amount]) => ({ label, amount: round2(amount) })).sort((x, y) => y.amount - x.amount),
     },
     cash: {
@@ -207,4 +226,4 @@ async function issues({ companyId, from, to }) {
   return out;
 }
 
-module.exports = { report, ledger, periodOf, issues };
+module.exports = { report, ledger, periodOf, issues, estimatedMargin, DEALER_COMMISSION };

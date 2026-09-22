@@ -791,18 +791,22 @@ async function runReport() {
     if (!r.rows.length) { $('#reportOut').innerHTML = '<div class="card muted">No days entered in this range yet.</div>'; return; }
     const colName = (row) => (all ? `${row.label}<br><span class="muted small">${esc(row.company)}</span>` : row.label);
 
-    // Without the purchase cost of fuel, "profit" would just be sales — so it is not shown until costs are entered.
-    const costsKnown = !t.pl.costMissingDays;
-    const tiles = [['Total sales', money(t.pl.sales)], ['Gross profit', costsKnown ? pnl(t.pl.gross) : '<span class="muted">needs purchase cost</span>'],
-      ['Operating expenses', money(t.pl.expenses)], ['Net profit / loss', costsKnown ? pnl(t.pl.net) : '<span class="muted">needs purchase cost</span>'],
+    // Purchase cost: the month's actual figure where entered, else the standard PPAC dealer commission (estimated).
+    const est = t.pl.estimatedDays;
+    const estTag = est ? ' <span class="badge b-warn" title="Uses the standard dealer commission — enter your actual cost or margin for exact figures">estimated</span>' : '';
+    const tiles = [['Total sales', money(t.pl.sales)], ['Gross profit / loss' + estTag, pnl(t.pl.gross)],
+      ['Operating expenses', money(t.pl.expenses)], ['Net profit / loss' + estTag, pnl(t.pl.net)],
       ['HSD litres', money(t.HSD)], ['MS litres', money(t.MS)], ['Deposited (Bank+PTM+UPI)', money(t.cash.deposits)], ['Party / credit', money(t.cash.parties)]]
       .map(([k, v]) => `<div><span>${k}</span><b>${v}</b></div>`).join('');
 
-    const cell = (p, v, profit) => (profit && p.costMissingDays ? '<span class="muted">—</span>' : profit ? pnl(v) : money(v));
+    const cell = (p, v, profit) => (profit ? pnl(v) : money(v));
     const plRow = (label, get, cls = '', profit = false) => `<tr class="${cls}"><td>${label}</td>${r.rows.map((x) => `<td>${cell(x.pl, get(x.pl), profit)}</td>`).join('')}<td>${cell(t.pl, get(t.pl), profit)}</td></tr>`;
-    const costNote = costsKnown ? '' : `<div class="note">Profit can't be worked out yet: the purchase cost per litre of fuel is missing for ${t.pl.costMissingDays} day(s).
-      This figure is not on the daily reports (they only show the selling rate), so it has to be entered once per month from the purchase invoices — or as the dealer margin per litre.
-      ${form.company_id.value ? '' : 'Pick one company to enter its purchase costs.'}</div>
+    const c = t.pl.commission;
+    const costNote = !est ? '' : `<div class="note"><b>Estimated for ${est} day(s):</b> the daily reports only show the selling rate, so the fuel cost is worked out from the
+      standard dealer commission published by <a href="${esc(c.source)}" target="_blank" rel="noopener">PPAC, Government of India</a> (from ${c.effective.split('-').reverse().join('-')}):
+      MS ₹${c.MS.perKl}/KL + ${c.MS.pct}%, HSD ₹${c.HSD.perKl}/KL + ${c.HSD.pct}% of the product billable price (taken as ${Math.round(c.billableShare * 100)}% of the selling rate).
+      That is about ₹${(c.MS.perKl / 1000 + (c.MS.pct / 100) * 113.77 * c.billableShare).toFixed(2)}/L on MS and ₹${(c.HSD.perKl / 1000 + (c.HSD.pct / 100) * 99.76 * c.billableShare).toFixed(2)}/L on HSD at this month's rates.
+      ${form.company_id.value ? 'For exact profit, enter your actual purchase cost or margin per litre below (from the purchase invoices).' : 'Pick one company to enter its actual purchase costs.'}</div>
       ${form.company_id.value ? '<div id="costEditor"></div>' : ''}`;
     const pl = `<div class="card"><h3>Profit &amp; Loss</h3>${costNote}<div class="table-wrap"><table class="pl">
       <thead><tr><th>Particulars</th>${r.rows.map((x) => `<th>${colName(x)}</th>`).join('')}<th>Total</th></tr></thead><tbody>
