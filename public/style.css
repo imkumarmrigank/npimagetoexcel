@@ -199,3 +199,8 @@ input.warn { background: var(--warn-bg); border-color: #e3b341; }
 .totals b .profit { color: #137a3c; }
 .totals b .loss { color: #b42318; }
 .totals span.badge { font-size: 10px; margin-left: 4px; }
+
+/* The quick-range button in use stays highlighted. */
+.quick button.active { background: var(--brand); border-color: var(--brand); color: #fff; font-weight: 600; }
+.quick button.active::before { content: '✓ '; }
+.quick button:focus-visible, .fields select:focus-visible, .fields input:focus-visible { outline: 2px solid var(--brand); outline-offset: 1px; }

@@ -750,7 +750,21 @@ async function boot() {
 
 // ---------- date ranges ----------
 const d2 = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+// Show which quick-range button is in use; typing your own dates clears it.
+function markRange(form, kind) {
+  form.querySelectorAll('[data-range]').forEach((b) => {
+    const on = b.dataset.range === kind;
+    b.classList.toggle('active', on);
+    b.setAttribute('aria-pressed', String(on));
+  });
+}
+document.querySelectorAll('form').forEach((form) => {
+  if (!form.querySelector('[data-range]')) return;
+  for (const n of ['from', 'to']) form[n]?.addEventListener('input', () => markRange(form, null));
+});
+
 function setRange(form, kind) {
+  markRange(form, kind);
   // Anchor on the selected month when there is one, else today.
   const m = state.summary?.month;
   const now = m ? new Date(m.year, m.month - 1, 1) : new Date();
@@ -975,6 +989,7 @@ async function runCash() {
 const RF = () => $('#reconForm');
 function reconRange(kind) {
   const f = RF();
+  markRange(f, kind);
   if (kind === 'prev') {
     const m = state.summary?.month;
     const base = m ? new Date(m.year, m.month - 2, 1) : new Date(new Date().getFullYear(), new Date().getMonth() - 1, 1);
@@ -987,6 +1002,7 @@ RF().month.addEventListener('change', (ev) => {
   const v = ev.target.value;
   if (!v) return;
   const [y, m] = v.split('-').map(Number);
+  markRange(RF(), null);
   RF().from.value = `${v}-01`;
   RF().to.value = d2(new Date(y, m, 0));
   runRecon();
