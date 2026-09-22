@@ -58,6 +58,14 @@ const wrap = (fn) => (req, res) => fn(req, res).catch((e) => {
   }
   res.status(e.status || 500).json({ error: e.message || 'Server error', ...(e.extra || {}) });
 });
+// "2,12,316.22", "₹ 1,000", 212316.22 → number; "" / null → null; anything else → NaN.
+function toAmount(v) {
+  if (v === null || v === undefined) return null;
+  if (typeof v === 'number') return Number.isFinite(v) ? v : NaN;
+  const t = String(v).replace(/[₹,\s]/g, '').replace(/^Rs\.?/i, '');
+  if (t === '') return null;
+  return /^-?\d*\.?\d+$/.test(t) ? Number(t) : NaN;
+}
 const fail = (status, message, extra) => Object.assign(new Error(message), { status, extra });
 const dmy = (y, m, d) => `${String(d).padStart(2, '0')}-${String(m).padStart(2, '0')}-${y}`;
 
@@ -126,9 +134,13 @@ app.post('/api/months', wrap(async (req, res) => {
 app.patch('/api/months/:id', wrap(async (req, res) => {
   const m = await getMonth(req.params.id);
   const f = { ...m, ...req.body };
-  const orNull = (v) => (v === '' || v === undefined || v === null ? null : v);
+  const orNull = (v, what) => {
+    const x = toAmount(v);
+    if (Number.isNaN(x)) throw fail(400, `${what} is not a number: “${v}”`);
+    return x;
+  };
   const r = await db.query('UPDATE months SET title=$2, hsd_rate=$3, ms_rate=$4, total_ob=$5, hsd_cost=$6, ms_cost=$7 WHERE id=$1 RETURNING *',
-    [m.id, f.title, orNull(f.hsd_rate), orNull(f.ms_rate), orNull(f.total_ob), orNull(f.hsd_cost), orNull(f.ms_cost)]);
+    [m.id, f.title, orNull(f.hsd_rate, 'HSD rate'), orNull(f.ms_rate, 'MS rate'), orNull(f.total_ob, 'Totals-row OB'), orNull(f.hsd_cost, 'HSD cost'), orNull(f.ms_cost, 'MS cost')]);
   res.json(r.rows[0]);
 }));
 app.delete('/api/months/:id', wrap(async (req, res) => {
@@ -299,9 +311,11 @@ app.get('/api/companies/:id/summaries/:year/:month', wrap(async (req, res) => {
 }));
 app.put('/api/companies/:id/summaries/:year/:month', wrap(async (req, res) => {
   const b = req.body || {};
-  const num = (v) => (v === '' || v === null || v === undefined || Number.isNaN(Number(v)) ? 0 : Number(v));
-  const fuel = (list) => (Array.isArray(list) ? list : []).map((x) => ({ units: num(x.units), rate: num(x.rate) })).filter((x) => x.units || x.rate);
-  const figures = { ...Object.fromEntries(SUMMARY_KEYS.map((k) => [k, num(b[k])])), hsd: fuel(b.hsd), ms: fuel(b.ms) };
+  const bad = [];
+  const num = (v, what) => { const x = toAmount(v); if (Number.isNaN(x)) { bad.push(`${what}: “${v}”`); return 0; } return x ?? 0; };
+  const fuel = (list) => (Array.isArray(list) ? list : []).map((x) => ({ units: num(x.units, 'units'), rate: num(x.rate, 'rate') })).filter((x) => x.units || x.rate);
+  const figures = { ...Object.fromEntries(SUMMARY_KEYS.map((k) => [k, num(b[k], k)])), hsd: fuel(b.hsd), ms: fuel(b.ms) };
+  if (bad.length) throw fail(400, `Not saved — these are not numbers: ${bad.join('; ')}`);
   await db.query(
     `INSERT INTO month_summaries (company_id, year, month, figures) VALUES ($1,$2,$3,$4)
      ON CONFLICT (company_id, year, month) DO UPDATE SET figures = EXCLUDED.figures, updated_at = now()`,
@@ -483,7 +497,7 @@ app.post('/api/entries/:id/check', wrap(async (req, res) => {
   const cur = r.rows[0];
   const month = await getMonth(cur.month_id);
   const rules = await loadRules(cur.company_id);
-  const num = (v) => (v === '' || v === null || v === undefined ? null : Number(v));
+  const num = (v) => { const x = toAmount(v); return Number.isNaN(x) ? null : x; };
   const lines = classifyLines((req.body.lines || []).map((l, i) => ({
     id: l.id || i + 1, side: l.side === 'out' ? 'out' : 'in', label: String(l.label || '').trim(),
     unit: num(l.unit), rate: num(l.rate), amount: num(l.amount), col: l.col || null, manual: !!l.manual,
@@ -542,23 +556,37 @@ app.put('/api/entries/:id', wrap(async (req, res) => {
     if (clash.rowCount) throw fail(409, `${dmy(cur.year, cur.month, day)} already has an entry — open it instead, or delete one of them.`, { code: 'duplicate_day', existing_id: clash.rows[0].id });
   }
   const rules = await loadRules(companyId);
-  const clean = classifyLines((lines || []).map((l, i) => ({
-    id: l.id || i + 1,
-    side: l.side === 'out' ? 'out' : 'in',
-    label: String(l.label || '').trim(),
-    unit: l.unit === '' || l.unit === null ? null : Number(l.unit),
-    rate: l.rate === '' || l.rate === null ? null : Number(l.rate),
-    amount: l.amount === '' || l.amount === null ? null : Number(l.amount),
-    col: l.col || null,
-    manual: !!l.manual,
-  })), rules);
+  // Numbers may arrive as "2,12,316.22" or "₹ 1,000": read them; refuse anything unreadable
+  // rather than saving it as blank.
+  const bad = [];
+  const clean = classifyLines((lines || []).map((l, i) => {
+    const label = String(l.label || '').trim();
+    const read = (v, what) => { const x = toAmount(v); if (Number.isNaN(x)) bad.push(`${label || 'a row'} (${what}: “${v}”)`); return Number.isNaN(x) ? null : x; };
+    return {
+      id: l.id || i + 1,
+      side: l.side === 'out' ? 'out' : 'in',
+      label,
+      unit: read(l.unit, 'unit'),
+      rate: read(l.rate, 'rate'),
+      amount: read(l.amount, 'amount'),
+      col: l.col || null,
+      manual: !!l.manual,
+    };
+  }), rules);
+  const cleanPrinted = { ...(printed || {}) };
+  for (const k of ['total_inflow', 'total_expense', 'cash_in_hand']) {
+    const x = toAmount(cleanPrinted[k]);
+    if (Number.isNaN(x)) bad.push(`${k.replace('_', ' ')}: “${cleanPrinted[k]}”`);
+    cleanPrinted[k] = Number.isNaN(x) ? null : x;
+  }
+  if (bad.length) throw fail(400, `Not saved — these are not numbers: ${bad.join('; ')}`, { code: 'bad_number' });
   // A verified day that is changed goes back to review, unless this save is the verification.
   const strip = (ls) => JSON.stringify((ls || []).map(({ side, label, unit, rate, amount, col }) => [side, label, unit, rate, amount, col]));
-  const changed = strip(clean) !== strip(cur.lines) || JSON.stringify(printed || {}) !== JSON.stringify(cur.printed || {}) || (day || null) !== cur.day;
+  const changed = strip(clean) !== strip(cur.lines) || JSON.stringify(cleanPrinted) !== JSON.stringify(cur.printed || {}) || (day || null) !== cur.day;
   const nextStatus = status === 'verified' && (req.body.verify || !changed) ? 'verified' : 'review';
   await db.query(
     'UPDATE entries SET day=$2, report_date=$3, lines=$4, printed=$5, status=$6, updated_at=now() WHERE id=$1',
-    [req.params.id, day || null, report_date || null, JSON.stringify(clean), JSON.stringify(printed || {}), nextStatus],
+    [req.params.id, day || null, report_date || null, JSON.stringify(clean), JSON.stringify(cleanPrinted), nextStatus],
   );
   // "Remember" turns a hand-assigned line into an exact-label rule for future images.
   for (const l of clean.filter((x) => x.manual && remember?.includes(x.id))) {

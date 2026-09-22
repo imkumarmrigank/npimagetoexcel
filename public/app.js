@@ -3,6 +3,16 @@ const state = { companies: [], companyId: null, months: [], monthId: null, summa
 
 const fmt = (v, d = 2) => (v === null || v === undefined || v === '' || Number(v) === 0 ? '' : Number(v).toLocaleString('en-IN', { minimumFractionDigits: d, maximumFractionDigits: d }));
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+// "2,12,316.22", "₹ 1,000", "212316.22" → number; "" → null; anything else → NaN (shown red, never saved).
+function parseAmount(v) {
+  if (v === null || v === undefined) return null;
+  if (typeof v === 'number') return v;
+  const t = String(v).replace(/[₹,\s]/g, '').replace(/^Rs\.?/i, '');
+  if (t === '') return null;
+  return /^-?\d*\.?\d+$/.test(t) ? Number(t) : NaN;
+}
+// What a figure box shows: what was typed (if any), else the stored number.
+const shownNum = (l, f) => (l._raw && l._raw[f] !== undefined ? l._raw[f] : l[f] ?? '');
 const toast = (msg) => { const t = $('#toast'); t.textContent = msg; t.classList.add('show'); clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove('show'), 3500); };
 
 async function api(path, opts = {}) {
@@ -269,7 +279,7 @@ async function uploadFiles(files) {
   // Tell the user at once which dates are already taken, before anything is uploaded.
   let taken = {};
   try { taken = await api(`/api/companies/${companyId}/existing`, { method: 'POST', body: { dates } }); } catch (e) { return toast(e.message); }
-  let lastId = null, lastMonth = null, uploaded = 0;
+  let lastId = null, lastMonth = null, uploaded = 0, lastAttached = false;
 
   const send = (file, date, st, replace) => {
     uploading = uploading.then(async () => {
@@ -283,7 +293,7 @@ async function uploadFiles(files) {
         st.innerHTML = r.attached
           ? `${badge('ok', 'attached')} added to the figures typed for this date — check them against the image`
           : badge('ok', r.replaced ? 'replaced' : 'saved') + ' type the figures';
-        lastId = r.id; lastMonth = r.month_id; uploaded++;
+        lastId = r.id; lastMonth = r.month_id; lastAttached = !!r.attached; uploaded++;
       } catch (e) {
         st.innerHTML = `${badge('error', e.data?.code === 'duplicate_image' ? 'same image' : 'not saved')} ${esc(e.message)}`
           + (e.data?.existing_id ? ` <button class="small" data-open="${e.data.existing_id}">Open</button>` : '');
@@ -325,7 +335,10 @@ async function uploadFiles(files) {
   async function afterUpload() {
     if (companyId !== state.companyId) return;
     if (lastMonth) await loadMonths(lastMonth); else if (state.monthId) await loadSummary();
-    if (lastId && uploaded === 1) await openReview(lastId);
+    if (lastId && uploaded === 1) {
+      await openReview(lastId);
+      if (!lastAttached) fillFromImage({ auto: true }); // a typed day keeps its figures
+    }
   }
   uploading = uploading.then(async () => {
     await afterUpload();
@@ -447,6 +460,8 @@ async function openReview(id) {
   $('#noImg').classList.toggle('hidden', e.has_image);
   $('#imgOpen').classList.toggle('hidden', !e.has_image);
   $('#rOcr').classList.toggle('hidden', !e.has_image);
+  $('#rOcr').textContent = 'Read image again';
+  $('#readNote').classList.add('hidden');
   if (e.has_image) { const u = `/api/entries/${id}/image?v=${e.image_v || ''}`; $('#reviewImg').src = u; $('#imgOpen').href = u; }
   $('#rReplace').textContent = e.has_image ? 'Replace image' : 'Add image';
   $('#rReplace').title = e.has_image
@@ -482,8 +497,8 @@ function renderLines() {
     $(side === 'in' ? '#inLines' : '#outLines').innerHTML = head + rows.map((l) => `
       <tr data-lid="${l.id}" class="${l.manual ? 'changed' : ''}">
         <td><input data-f="label" value="${esc(l.label)}"></td>
-        ${side === 'in' ? `<td class="unit"><input data-f="unit" type="number" step="0.01" value="${l.unit ?? ''}"></td><td class="unit"><input data-f="rate" type="number" step="0.01" value="${l.rate ?? ''}"></td>` : ''}
-        <td class="num"><input data-f="amount" type="number" step="0.01" value="${l.amount ?? ''}"></td>
+        ${side === 'in' ? `<td class="unit"><input data-f="unit" type="text" inputmode="decimal" autocomplete="off" value="${esc(shownNum(l, 'unit'))}"></td><td class="unit"><input data-f="rate" type="text" inputmode="decimal" autocomplete="off" value="${esc(shownNum(l, 'rate'))}"></td>` : ''}
+        <td class="num"><input data-f="amount" type="text" inputmode="decimal" autocomplete="off" value="${esc(shownNum(l, 'amount'))}"></td>
         <td><select data-f="col">${colOptions(side, l.col)}</select></td>
         <td>${l.manual ? `<label class="small" title="Use this column for this label on future images"><input type="checkbox" data-remember ${state.entry.remember.has(l.id) ? 'checked' : ''} style="width:auto"> remember</label>` : ''}</td>
         <td><button class="ghost small" data-del title="Remove line">✕</button></td>
@@ -502,7 +517,14 @@ for (const tbl of ['#inLines', '#outLines']) {
       return;
     }
     const f = ev.target.dataset.f;
-    l[f] = ev.target.value;
+    if (['unit', 'rate', 'amount'].includes(f)) {
+      // Keep what was typed on screen; store the number it means ("2,12,316.22" → 212316.22).
+      const x = parseAmount(ev.target.value);
+      l._raw = { ...(l._raw || {}), [f]: ev.target.value };
+      l._bad = { ...(l._bad || {}), [f]: Number.isNaN(x) };
+      l[f] = Number.isNaN(x) ? null : x;
+      ev.target.classList.toggle('bad', Number.isNaN(x));
+    } else l[f] = ev.target.value;
     if (f === 'col') { l.manual = true; renderLines(); } else liveSums();
   });
   $(tbl).addEventListener('click', (ev) => {
@@ -535,7 +557,7 @@ function scheduleRecheck() {
   if (!e || e.tally_batch_id) return;
   recheckTimer = setTimeout(async () => {
     const seq = ++recheckSeq;
-    const num = (v) => (v === '' ? null : Number(v));
+    const num = (v) => { const x = parseAmount(v); return Number.isNaN(x) ? null : x; };
     try {
       const r = await api(`/api/entries/${e.id}/check`, {
         method: 'POST',
@@ -558,9 +580,10 @@ function scheduleRecheck() {
 const TOL = 1;
 function liveCheck(sumIn, sumOut) {
   const e = state.entry;
-  const val = (id) => ($(id).value === '' ? null : Number($(id).value));
+  const val = (id) => { const x = parseAmount($(id).value); if (Number.isNaN(x)) $(id).classList.add('bad'); return Number.isNaN(x) ? null : x; };
   const problems = [];
   document.querySelectorAll('#review .bad, #review .bad-soft, #review .warn').forEach((el) => el.classList.remove('bad', 'bad-soft', 'warn'));
+  for (const l of e.lines) for (const [f, isBad] of Object.entries(l._bad || {})) if (isBad) document.querySelector(`tr[data-lid="${l.id}"] input[data-f="${f}"]`)?.classList.add('bad');
   const hint = (id, text, warn) => { $(id).textContent = text || ''; $(id).classList.toggle('warn', !!warn); };
   const amountInputs = (side) => [...document.querySelectorAll(`#${side}Lines tr[data-lid] input[data-f="amount"]`)];
   const rowInputs = (id) => [...document.querySelectorAll(`tr[data-lid="${id}"] input`)];
@@ -628,27 +651,42 @@ function renderComputed(c) {
     .filter(([, v]) => Number(v)).map(([k, v]) => `<div><b>${k}</b>${fmt(v)}</div>`).join('');
 }
 
-async function saveEntry(status, { verify = false } = {}) {
+async function saveEntry(status, { verify = false, close = false } = {}) {
   const e = state.entry;
-  const num = (v) => (v === '' ? null : Number(v));
+  // Never save a figure that couldn't be read: point at it instead.
+  const badLine = e.lines.find((l) => l._bad && Object.values(l._bad).some(Boolean));
+  const badPrinted = [['#rTin', 'Printed total inflow'], ['#rTex', 'Printed total expenses'], ['#rCash', 'Printed cash in hand']]
+    .find(([id]) => Number.isNaN(parseAmount($(id).value)));
+  if (badLine || badPrinted) {
+    const what = badPrinted ? badPrinted[1] : `${badLine.label || 'a row'} (${Object.keys(badLine._bad).filter((k) => badLine._bad[k]).join(', ')})`;
+    if (badPrinted) $(badPrinted[0]).classList.add('bad');
+    toast(`Not saved — “${what}” is not a number. Type digits only, e.g. 212316.22 or 2,12,316.22.`);
+    return false;
+  }
+  const lines = e.lines.map(({ _raw, _bad, ...l }) => l);
   const r = await api(`/api/entries/${e.id}`, {
     method: 'PUT',
     body: {
-      day: num($('#rDay').value), report_date: $('#rDate').value, lines: e.lines, status, verify,
-      printed: { ...(e.printed || {}), total_inflow: num($('#rTin').value), total_expense: num($('#rTex').value), cash_in_hand: num($('#rCash').value) },
+      day: parseAmount($('#rDay').value), report_date: $('#rDate').value, lines, status, verify,
+      printed: { ...(e.printed || {}), total_inflow: parseAmount($('#rTin').value), total_expense: parseAmount($('#rTex').value), cash_in_hand: parseAmount($('#rCash').value) },
       remember: [...e.remember],
     },
   });
   if (state.monthId) await loadSummary();
-  await openReview(e.id);
-  toast(r.status === 'verified' ? 'Saved and marked verified'
-    : r.reverted ? 'Saved. The figures changed, so this day is back to “review” — check it and press “Save & mark verified” again.' : 'Saved');
+  const saved = state.summary?.entries.find((x) => x.id === e.id);
+  const left = saved ? saved.errors : 0;
+  const msg = r.status === 'verified' ? 'Saved and marked verified.'
+    : r.reverted ? 'Saved. The figures changed, so this day is back to “review”.' : 'Saved.';
+  const tail = left ? ` ${left} mismatch(es) still open on this day — see Errors.` : saved?.warnings ? ' Figures add up; an opening-cash warning is still open.' : ' All figures add up.';
+  if (close) { reviewDlg.close(); } else await openReview(e.id);
+  toast(msg + tail);
+  return true;
 }
-$('#rSave').onclick = () => saveEntry(state.entry.status).catch((e) => toast(e.message));
+$('#rSave').onclick = () => saveEntry(state.entry.status, { close: true }).catch((e) => toast(e.message));
 $('#rVerify').onclick = async () => {
   const errs = state.summary.entries.find((x) => x.id === state.entry.id)?.errors;
   if (errs && !confirm('This image still has mismatches. Mark it verified anyway?')) return;
-  saveEntry('verified', { verify: true }).catch((e) => toast(e.message));
+  saveEntry('verified', { verify: true, close: true }).catch((e) => toast(e.message));
 };
 $('#rDelete').onclick = async () => {
   if (!confirm('Delete this image and its data?')) return;
@@ -672,39 +710,76 @@ $('#replaceFile').onchange = async (ev) => {
     await api(`/api/entries/${e.id}/image`, { method: 'PUT', body: fd });
     if (state.monthId) await loadSummary();
     await openReview(e.id);
-    toast(had ? 'Image replaced — compare the figures with the new image, then Save & mark verified' : 'Image added — compare the figures with it, then Save & mark verified');
+    toast(had ? 'Image replaced — reading its figures…' : 'Image added — reading its figures…');
+    fillFromImage({ auto: true });
   } catch (err) {
     toast(err.message);
   } finally { btn.disabled = false; btn.textContent = state.entry?.has_image ? 'Replace image' : 'Add image'; }
 };
 
-$('#rOcr').onclick = async (ev) => {
+// Read the day's image with the offline text reader (Tesseract, in this browser — no AI) and put what
+// it finds into the form. Nothing is saved: the user checks against the image, then saves.
+// auto = run by itself after an upload/replace; a poor read then leaves the figures as they were.
+async function fillFromImage({ auto = false } = {}) {
   const e = state.entry;
-  const typed = e.lines.some((l) => l.col !== 'OB' && l.amount !== null && l.amount !== '');
-  if (typed && !confirm('Replace the figures on this form with what the text reader finds?')) return;
-  const btn = ev.target;
+  if (!e || !e.has_image || e.tally_batch_id) return;
+  const btn = $('#rOcr');
   btn.disabled = true;
+  $('#readNote').classList.remove('hidden');
+  $('#readNote').textContent = 'Reading the image in this browser (free offline reader, no AI)…';
   try {
     const mo = state.summary?.month || {};
-    const r = await readLedgerText(`/api/entries/${e.id}/image?v=${e.image_v || ""}`, (p) => { btn.textContent = p; }, { hsd: Number(mo.hsd_rate), ms: Number(mo.ms_rate) });
-    if (!r.lines.length) return toast('Could not read any rows from this image — please type them in');
-    const m = state.summary?.month;
-    if (r.date && m && r.date.m === m.month && r.date.y === m.year) $('#rDay').value = r.date.d;
-    if (r.date) $('#rDate').value = r.date.text;
-    for (const [id, v] of [['#rTin', r.printed.total_inflow], ['#rTex', r.printed.total_expense], ['#rCash', r.printed.cash_in_hand]]) if (v !== null) $(id).value = v;
+    const r = await readLedgerText(`/api/entries/${e.id}/image?v=${e.image_v || ''}`, (p) => { btn.textContent = p; $('#readNote').textContent = `${p} — the figures will appear here for you to check.`; }, { hsd: Number(mo.hsd_rate), ms: Number(mo.ms_rate) });
+    if (state.entry !== e) return; // another day was opened meanwhile
     // Fuel rows: the month's rate is known, so a misread rate or unit is repaired from the amount.
     const rateFor = { HSD: Number(mo.hsd_rate), MS: Number(mo.ms_rate) };
     for (const l of r.lines) {
-      const fuel = l.side === 'in' && /^\s*(HSD|MS)\b/i.test(l.label) ? l.label.trim().toUpperCase().slice(0, l.label.trim().toUpperCase().startsWith('HSD') ? 3 : 2) : null;
+      const up = l.label.trim().toUpperCase();
+      const fuel = l.side === 'in' && /^(HSD|MS)\b/.test(up) ? (up.startsWith('HSD') ? 'HSD' : 'MS') : null;
       const known = fuel && rateFor[fuel];
       if (!known || !l.amount) continue;
       if (!l.rate || Math.abs(l.rate - known) > 3) l.rate = known;
       if (!l.unit || Math.abs(l.unit * l.rate - l.amount) > 1) l.unit = Math.round((l.amount / l.rate) * 100) / 100;
     }
-    e.lines = r.lines.map((l, i) => ({ ...l, id: i + 1, col: null }));
-    await saveEntry(e.status); // server applies the mapping rules; checks then show what to fix
-    toast(`Read ${r.lines.length} rows — check them against the image; red fields don't add up`);
-  } catch (err) { toast(`Text reader failed: ${err.message}`); } finally { btn.disabled = false; btn.textContent = 'Try reading text (offline)'; }
+    // Only trust a read that clearly found the report's anchor rows: at least two of opening cash,
+    // HSD and MS with an amount, plus some expenses. Photos of a screen often read as noise.
+    const anchors = [/^(OPE?N?ING|OPNING)\b/, /^HSD\b/, /^MS\b/]
+      .filter((re) => r.lines.some((l) => l.side === 'in' && re.test(l.label.trim().toUpperCase()) && Number(l.amount) > 0)).length;
+    const usable = anchors >= 2 && r.lines.filter((l) => l.side === 'out').length >= 2;
+    if (!usable) {
+      $('#readNote').textContent = `The reader couldn't read this image clearly, so the figures were left as they were. Photos of a computer screen usually can't be read — please type or correct the figures from the image (the red marks show what doesn't add up yet).`;
+      if (!auto) toast('Could not read enough rows from this image — please type them in');
+      return;
+    }
+    const m = state.summary?.month;
+    if (r.date && m && r.date.m === m.month && r.date.y === m.year) $('#rDay').value = r.date.d;
+    if (r.date) $('#rDate').value = r.date.text;
+    for (const [id, v] of [['#rTin', r.printed.total_inflow], ['#rTex', r.printed.total_expense], ['#rCash', r.printed.cash_in_hand]]) if (v !== null) $(id).value = v;
+    // Let the server apply the company's mapping rules (which column each row goes to), without saving.
+    const num = (v) => { const x = parseAmount(v); return Number.isNaN(x) ? null : x; };
+    const checked = await api(`/api/entries/${e.id}/check`, {
+      method: 'POST',
+      body: { day: num($('#rDay').value), lines: r.lines.map((l, i) => ({ ...l, id: i + 1, col: null })),
+        printed: { ...(e.printed || {}), total_inflow: num($('#rTin').value), total_expense: num($('#rTex').value), cash_in_hand: num($('#rCash').value) } },
+    });
+    if (state.entry !== e) return;
+    e.lines = checked.lines;
+    e.computed = checked.computed;
+    renderLines();
+    renderComputed(checked.computed);
+    $('#unsavedNote').classList.remove('hidden');
+    $('#readNote').textContent = `Filled ${r.lines.length} rows from the image. Check every figure against the image (red = doesn't add up), correct anything misread, then Save.`;
+    toast(`Read ${r.lines.length} rows from the image — check them, then Save`);
+  } catch (err) {
+    $('#readNote').textContent = `The reader could not run (${err.message}). Please type the figures from the image.`;
+    if (!auto) toast(`Text reader failed: ${err.message}`);
+  } finally { btn.disabled = false; btn.textContent = 'Read image again'; }
+}
+$('#rOcr').onclick = async () => {
+  const e = state.entry;
+  const typed = e.lines.some((l) => l.col !== 'OB' && l.amount !== null && l.amount !== '');
+  if (typed && !confirm('Replace the figures on this form with what the reader finds in the image? (Nothing is saved until you press Save.)')) return;
+  fillFromImage();
 };
 $('#rReclass').onclick = async () => {
   await api(`/api/entries/${state.entry.id}/reclassify`, { method: 'POST' });
@@ -1160,8 +1235,8 @@ async function runRecon() {
 // Month-end figures for a month kept outside the daily sheet (typed from the old reconciliation).
 function openSummaryForm(wm, fig) {
   const v = fig || {};
-  const fuelRow = (fuel, g = {}) => `<div class="fields fuel-row" data-fuel="${fuel}"><label>${fuel} units <input name="units" type="number" step="0.01" value="${g.units ?? ''}"></label><label>Rate <input name="rate" type="number" step="0.01" value="${g.rate ?? ''}"></label></div>`;
-  const inp = (k, label) => `<label>${label} <input name="${k}" type="number" step="0.01" value="${v[k] ?? ''}"></label>`;
+  const fuelRow = (fuel, g = {}) => `<div class="fields fuel-row" data-fuel="${fuel}"><label>${fuel} units <input name="units" type="text" inputmode="decimal" autocomplete="off" value="${g.units ?? ''}"></label><label>Rate <input name="rate" type="text" inputmode="decimal" autocomplete="off" value="${g.rate ?? ''}"></label></div>`;
+  const inp = (k, label) => `<label>${label} <input name="${k}" type="text" inputmode="decimal" autocomplete="off" value="${v[k] ?? ''}"></label>`;
   $('#reconOut').innerHTML = `<div class="card"><h3>Month-end figures — ${esc(MONTH_FULL[wm.m - 1])} ${wm.y}</h3>
     <form id="summaryForm" class="form" style="padding:0">
       <div class="fields">${inp('opening', 'Opening cash')}</div>
@@ -1195,18 +1270,18 @@ async function renderCostEditor(companyId, from, to) {
   $('#costEditor').innerHTML = `<p class="small" style="margin:0 0 6px">The daily images only show the <b>selling</b> rate. Enter what the pump pays per litre — or the dealer margin per litre, and the cost is worked out.</p>
     <table class="pl" style="max-width:820px"><thead><tr><th>Month</th><th>HSD cost / ltr</th><th>or HSD margin</th><th>MS cost / ltr</th><th>or MS margin</th><th></th></tr></thead><tbody>
     ${months.map((m) => `<tr data-mid="${m.id}" data-hr="${m.hsd_rate ?? ''}" data-mr="${m.ms_rate ?? ''}"><td>${esc(m.title)}<div class="muted small">selling HSD ${fmt(m.hsd_rate) || '—'} · MS ${fmt(m.ms_rate) || '—'}</div></td>
-      <td><input name="hsd_cost" type="number" step="0.01" value="${m.hsd_cost ?? ''}"></td>
-      <td><input name="hsd_margin" type="number" step="0.01" value="${margin(m.hsd_rate, m.hsd_cost)}" placeholder="e.g. 3.20"></td>
-      <td><input name="ms_cost" type="number" step="0.01" value="${m.ms_cost ?? ''}"></td>
-      <td><input name="ms_margin" type="number" step="0.01" value="${margin(m.ms_rate, m.ms_cost)}" placeholder="e.g. 4.10"></td>
+      <td><input name="hsd_cost" type="text" inputmode="decimal" autocomplete="off" value="${m.hsd_cost ?? ''}"></td>
+      <td><input name="hsd_margin" type="text" inputmode="decimal" autocomplete="off" value="${margin(m.hsd_rate, m.hsd_cost)}" placeholder="e.g. 3.20"></td>
+      <td><input name="ms_cost" type="text" inputmode="decimal" autocomplete="off" value="${m.ms_cost ?? ''}"></td>
+      <td><input name="ms_margin" type="text" inputmode="decimal" autocomplete="off" value="${margin(m.ms_rate, m.ms_cost)}" placeholder="e.g. 4.10"></td>
       <td><button class="small primary" data-savecost>Save</button></td></tr>`).join('')}</tbody></table>`;
   $('#costEditor').querySelectorAll('tr[data-mid]').forEach((tr) => {
     // Typing a margin fills the cost from the selling rate, and the other way round.
     for (const f of ['hsd', 'ms']) {
       const rate = Number(tr.dataset[f === 'hsd' ? 'hr' : 'mr']);
       const cost = tr.querySelector(`[name=${f}_cost]`), mar = tr.querySelector(`[name=${f}_margin]`);
-      mar.addEventListener('input', () => { if (rate && mar.value !== '') cost.value = (rate - Number(mar.value)).toFixed(2); });
-      cost.addEventListener('input', () => { mar.value = rate && cost.value !== '' ? (rate - Number(cost.value)).toFixed(2) : ''; });
+      mar.addEventListener('input', () => { const m = parseAmount(mar.value); if (rate && m !== null && !Number.isNaN(m)) cost.value = (rate - m).toFixed(2); });
+      cost.addEventListener('input', () => { const c = parseAmount(cost.value); mar.value = rate && c !== null && !Number.isNaN(c) ? (rate - c).toFixed(2) : ''; });
     }
   });
   $('#costEditor').querySelectorAll('[data-savecost]').forEach((b) => {

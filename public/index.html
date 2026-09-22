@@ -335,12 +335,13 @@
           </div>
         </div>
         <div id="lockNote" class="note hidden"></div>
+        <div id="readNote" class="note hidden"></div>
         <div class="fields">
           <label>Day <input id="rDay" type="number" min="1" max="31"><small class="hint" id="hDay"></small></label>
           <label>Date on image <input id="rDate" type="text"></label>
-          <label>Printed total inflow <input id="rTin" type="number" step="0.01"><small class="hint" id="hTin"></small></label>
-          <label>Printed total expenses <input id="rTex" type="number" step="0.01"><small class="hint" id="hTex"></small></label>
-          <label>Printed cash in hand <input id="rCash" type="number" step="0.01"><small class="hint" id="hCash"></small></label>
+          <label>Printed total inflow <input id="rTin" type="text" inputmode="decimal" autocomplete="off"><small class="hint" id="hTin"></small></label>
+          <label>Printed total expenses <input id="rTex" type="text" inputmode="decimal" autocomplete="off"><small class="hint" id="hTex"></small></label>
+          <label>Printed cash in hand <input id="rCash" type="text" inputmode="decimal" autocomplete="off"><small class="hint" id="hCash"></small></label>
         </div>
         <p id="rNotes" class="muted small"></p>
 
@@ -363,7 +364,7 @@
           <button class="danger ghost" id="rDelete">Delete image</button>
           <button class="ghost" id="rReplace" title="Upload a better or corrected image for this day. The figures you typed are kept.">Replace image</button>
           <input id="replaceFile" type="file" accept="image/*" hidden>
-          <button class="ghost" id="rOcr" title="Reads the image inside this browser with the free Tesseract text reader. Nothing is sent to any AI service.">Try reading text (offline)</button>
+          <button class="ghost" id="rOcr" title="Reads the image inside this browser with the free Tesseract text reader. Nothing is sent to any AI service.">Read image again</button>
           <button class="ghost" id="rReclass">Re-apply rules</button>
           <span class="spacer"></span>
           <button id="rSave">Save</button>
@@ -380,11 +381,11 @@
       <div class="fields">
         <label>Year <input name="year" type="number" required></label>
         <label>Month <input name="month" type="number" min="1" max="12" required></label>
-        <label>HSD rate <input name="hsd_rate" type="number" step="0.01" placeholder="99.76"></label>
-        <label>MS rate <input name="ms_rate" type="number" step="0.01" placeholder="113.77"></label>
-        <label class="only-edit">HSD purchase cost / ltr (for P&amp;L) <input name="hsd_cost" type="number" step="0.01"></label>
-        <label class="only-edit">MS purchase cost / ltr (for P&amp;L) <input name="ms_cost" type="number" step="0.01"></label>
-        <label class="only-edit">Totals-row OB (cell B35) <input name="total_ob" type="number" step="0.01" placeholder="defaults to day 1 OB"></label>
+        <label>HSD rate <input name="hsd_rate" type="text" inputmode="decimal" autocomplete="off" placeholder="99.76"></label>
+        <label>MS rate <input name="ms_rate" type="text" inputmode="decimal" autocomplete="off" placeholder="113.77"></label>
+        <label class="only-edit">HSD purchase cost / ltr (for P&amp;L) <input name="hsd_cost" type="text" inputmode="decimal" autocomplete="off"></label>
+        <label class="only-edit">MS purchase cost / ltr (for P&amp;L) <input name="ms_cost" type="text" inputmode="decimal" autocomplete="off"></label>
+        <label class="only-edit">Totals-row OB (cell B35) <input name="total_ob" type="text" inputmode="decimal" autocomplete="off" placeholder="defaults to day 1 OB"></label>
       </div>
       <div class="review-actions">
         <button type="button" class="danger ghost only-edit" id="deleteMonth">Delete month</button>
