@@ -430,7 +430,7 @@ app.get('/api/ledger/export.xlsx', wrap(async (req, res) => {
 
 // --- entries ---
 app.get('/api/entries/:id', wrap(async (req, res) => {
-  const r = await db.query('SELECT id, month_id, day, report_date, image_name, lines, printed, notes, status, source, tally_batch_id, image IS NOT NULL AS has_image FROM entries WHERE id=$1', [req.params.id]);
+  const r = await db.query('SELECT id, month_id, day, report_date, image_name, lines, printed, notes, status, source, tally_batch_id, image IS NOT NULL AS has_image, left(image_hash, 12) AS image_v, (SELECT count(*)::int FROM entry_image_history h WHERE h.entry_id = entries.id) AS old_images FROM entries WHERE id=$1', [req.params.id]);
   if (!r.rowCount) throw fail(404, 'Not found');
   const e = r.rows[0];
   const summary = await monthSummary(await getMonth(e.month_id));
@@ -443,6 +443,33 @@ app.get('/api/entries/:id/image', wrap(async (req, res) => {
   res.setHeader('Cache-Control', 'private, max-age=86400');
   res.send(r.rows[0].image);
 }));
+// Replace (or add) the image of a day while reviewing it. The typed figures stay; the day goes
+// back to review so it is checked against the new image. The old image is kept in history.
+app.put('/api/entries/:id/image', upload.single('image'), wrap(async (req, res) => {
+  if (!req.file) throw fail(400, 'No image');
+  if (!/^image\//.test(req.file.mimetype)) throw fail(400, 'Only image files can be uploaded');
+  const cur = (await db.query(
+    'SELECT e.id, e.image, e.image_mime, e.image_name, e.image_hash, e.tally_batch_id, m.company_id FROM entries e JOIN months m ON m.id = e.month_id WHERE e.id=$1',
+    [req.params.id])).rows[0];
+  if (!cur) throw fail(404, 'Not found');
+  if (cur.tally_batch_id) throw fail(409, `This day was sent to Tally in batch #${cur.tally_batch_id} and is locked. Unlock it in Tally Export to change it.`, { code: 'exported' });
+  const hash = crypto.createHash('sha256').update(req.file.buffer).digest('hex');
+  if (hash === cur.image_hash) throw fail(409, 'That is the same image this day already has');
+  const dup = await db.query(
+    'SELECT e.id, e.report_date FROM entries e JOIN months m ON m.id = e.month_id WHERE m.company_id=$1 AND e.image_hash=$2 AND e.id<>$3',
+    [cur.company_id, hash, cur.id]);
+  if (dup.rowCount) throw fail(409, `This exact image is already used for ${dup.rows[0].report_date || 'another day'}`, { code: 'duplicate_image', existing_id: dup.rows[0].id });
+  if (cur.image) {
+    await db.query('INSERT INTO entry_image_history (entry_id, image, image_mime, image_name, image_hash) VALUES ($1,$2,$3,$4,$5)',
+      [cur.id, cur.image, cur.image_mime, cur.image_name, cur.image_hash]);
+  }
+  await db.query(
+    "UPDATE entries SET image=$2, image_mime=$3, image_name=$4, image_hash=$5, source='image', status='review', updated_at=now() WHERE id=$1",
+    [cur.id, req.file.buffer, req.file.mimetype, req.file.originalname, hash]);
+  const versions = (await db.query('SELECT count(*)::int c FROM entry_image_history WHERE entry_id=$1', [cur.id])).rows[0].c;
+  res.json({ ok: true, replaced: !!cur.image, previous_versions: versions });
+}));
+
 app.put('/api/entries/:id', wrap(async (req, res) => {
   const { day, report_date, lines, printed, status, remember } = req.body;
   const owner = await db.query(

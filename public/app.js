@@ -437,7 +437,11 @@ async function openReview(id) {
   $('#noImg').classList.toggle('hidden', e.has_image);
   $('#imgOpen').classList.toggle('hidden', !e.has_image);
   $('#rOcr').classList.toggle('hidden', !e.has_image);
-  if (e.has_image) { $('#reviewImg').src = `/api/entries/${id}/image`; $('#imgOpen').href = `/api/entries/${id}/image`; }
+  if (e.has_image) { const u = `/api/entries/${id}/image?v=${e.image_v || ''}`; $('#reviewImg').src = u; $('#imgOpen').href = u; }
+  $('#rReplace').textContent = e.has_image ? 'Replace image' : 'Add image';
+  $('#rReplace').title = e.has_image
+    ? `Upload a better or corrected image for this day. The figures you typed are kept.${e.old_images ? ` (${e.old_images} earlier image(s) kept on record)` : ''}`
+    : 'Attach the image for this day. The figures you typed are kept.';
   setZoom(1);
   $('#rDay').value = e.day ?? '';
   $('#rDate').value = e.report_date ?? '';
@@ -610,6 +614,28 @@ $('#rDelete').onclick = async () => {
   reviewDlg.close();
   await loadSummary();
 };
+// Replace / add the day's image from the review form; figures stay, the day goes back to review.
+$('#rReplace').onclick = () => { $('#replaceFile').value = ''; $('#replaceFile').click(); };
+$('#replaceFile').onchange = async (ev) => {
+  const file = ev.target.files[0];
+  const e = state.entry;
+  if (!file || !e) return;
+  const had = e.has_image;
+  if (!confirm(`${had ? 'Replace this day’s image' : 'Add this image to the day'} with “${file.name}”?\n\nThe figures already typed are kept — check them against the new image. The day goes back to “review”.${had ? '\nThe old image is kept on record.' : ''}`)) return;
+  const fd = new FormData();
+  fd.append('image', file);
+  const btn = $('#rReplace');
+  btn.disabled = true; btn.textContent = 'Uploading…';
+  try {
+    await api(`/api/entries/${e.id}/image`, { method: 'PUT', body: fd });
+    if (state.monthId) await loadSummary();
+    await openReview(e.id);
+    toast(had ? 'Image replaced — compare the figures with the new image, then Save & mark verified' : 'Image added — compare the figures with it, then Save & mark verified');
+  } catch (err) {
+    toast(err.message);
+  } finally { btn.disabled = false; btn.textContent = state.entry?.has_image ? 'Replace image' : 'Add image'; }
+};
+
 $('#rOcr').onclick = async (ev) => {
   const e = state.entry;
   const typed = e.lines.some((l) => l.col !== 'OB' && l.amount !== null && l.amount !== '');
@@ -618,7 +644,7 @@ $('#rOcr').onclick = async (ev) => {
   btn.disabled = true;
   try {
     const mo = state.summary?.month || {};
-    const r = await readLedgerText(`/api/entries/${e.id}/image`, (p) => { btn.textContent = p; }, { hsd: Number(mo.hsd_rate), ms: Number(mo.ms_rate) });
+    const r = await readLedgerText(`/api/entries/${e.id}/image?v=${e.image_v || ""}`, (p) => { btn.textContent = p; }, { hsd: Number(mo.hsd_rate), ms: Number(mo.ms_rate) });
     if (!r.lines.length) return toast('Could not read any rows from this image — please type them in');
     const m = state.summary?.month;
     if (r.date && m && r.date.m === m.month && r.date.y === m.year) $('#rDay').value = r.date.d;
