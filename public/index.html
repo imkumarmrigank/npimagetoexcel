@@ -23,6 +23,7 @@
       </div>
     </div>
     <nav class="menu" id="tabs">
+      <button data-tab="dash"><span>◔</span>Dashboard</button>
       <button data-tab="sheet" class="active"><span>▦</span>Monthly sheet</button>
       <button data-tab="errors"><span>⚠</span>Errors <b id="errCount" class="count hidden"></b></button>
       <button data-tab="recon"><span>⚖</span>Cash Reconciliation</button>
@@ -93,6 +94,37 @@
         </div>
       </div>
     </section>
+    <section id="dashView" class="hidden">
+      <div class="card">
+        <div class="row-between"><h3>Dashboard — <span id="dashCompany"></span></h3><span class="muted small" id="dashNote"></span></div>
+        <form id="dashForm" class="fields">
+          <label>Show
+            <select name="group">
+              <option value="day">Daily</option><option value="week">Weekly</option><option value="month">Monthly</option><option value="year">Yearly</option>
+            </select>
+          </label>
+          <label>From <input name="from" type="date"></label>
+          <label>To <input name="to" type="date"></label>
+          <label>Year type <select name="fy"><option value="1">Financial (Apr–Mar)</option><option value="0">Calendar</option></select></label>
+          <div class="quick">
+            <button type="button" data-range="month">This month</button>
+            <button type="button" data-range="quarter">This quarter</button>
+            <button type="button" data-range="fy">This FY</button>
+            <button type="button" data-range="all">All time</button>
+          </div>
+        </form>
+      </div>
+      <div id="dashTiles" class="card totals dash-tiles"></div>
+      <div class="dash-grid">
+        <div class="card chart-card"><h3>Sales</h3><p class="muted small chart-sub">Fuel, lube and coffee sold, ₹</p><div class="chart-box"><canvas id="chSales"></canvas></div></div>
+        <div class="card chart-card"><h3>Profit / loss</h3><p class="muted small chart-sub" id="plSub">Net profit (above zero) or loss (below), ₹</p><div class="chart-box"><canvas id="chPl"></canvas></div></div>
+        <div class="card chart-card"><h3>Expenses</h3><p class="muted small chart-sub">Pump expenses and Others payments, ₹</p><div class="chart-box"><canvas id="chExp"></canvas></div></div>
+        <div class="card chart-card"><h3>Deposits</h3><p class="muted small chart-sub">Cash deposited to Bank, Paytm and UPI, ₹</p><div class="chart-box"><canvas id="chDep"></canvas></div></div>
+        <div class="card chart-card wide"><h3>Top expense heads</h3><p class="muted small chart-sub">Pump expenses (P-Exp) in the whole range, ₹</p><div class="chart-box tall"><canvas id="chHeads"></canvas></div></div>
+      </div>
+      <p class="muted small">Every figure here is also in <a href="#" id="dashToReports">Reports &amp; P&amp;L</a> as a table.</p>
+    </section>
+
     <section id="errorsView" class="hidden">
       <div class="card">
         <h3>Errors — <span id="errCompany"></span></h3>
@@ -377,6 +409,7 @@
   </dialog>
 
   <div id="toast" class="toast"></div>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
   <script src="ocr.js"></script>
   <script src="app.js"></script>
 </body>

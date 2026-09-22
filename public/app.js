@@ -31,7 +31,7 @@ async function loadCompanies(selectId) {
   const opts = `<option value="">All companies</option>` + state.companies.map((c) => `<option value="${c.id}">${esc(c.name)}</option>`).join('');
   for (const id of ['#repCompany', '#ledCompany']) { $(id).innerHTML = opts; $(id).value = state.companyId || ''; }
   if (!has) {
-    for (const id of ['#empty', '#dashboard', '#monthBar', '#reportsView', '#ledgerView', '#cashView', '#reconView', '#errorsView', '#tallyView']) $(id).classList.add('hidden');
+    for (const id of ['#empty', '#dashboard', '#monthBar', '#reportsView', '#ledgerView', '#cashView', '#reconView', '#errorsView', '#tallyView', '#dashView']) $(id).classList.add('hidden');
     return;
   }
   sel.value = state.companyId;
@@ -52,6 +52,8 @@ function showTab(tab) {
   $('#cashView').classList.toggle('hidden', tab !== 'cash');
   $('#reconView').classList.toggle('hidden', tab !== 'recon');
   $('#errorsView').classList.toggle('hidden', tab !== 'errors');
+  $('#dashView').classList.toggle('hidden', tab !== 'dash');
+  if (tab === 'dash') { if (!$('#dashForm').from.value) setRange($('#dashForm'), 'month'); runDash(); }
   $('#tallyView').classList.toggle('hidden', tab !== 'tally');
   if (tab === 'tally') openTally();
   if (tab === 'errors') runErrors();
@@ -1373,6 +1375,127 @@ async function renderBatches() {
       try { await api(`/api/tally/batches/${b.dataset.unlock}/unlock`, { method: 'POST' }); toast('Batch unlocked'); renderBatches(); if (state.monthId) loadSummary(); } catch (e) { toast(e.message); }
     };
   });
+}
+
+
+// ---------- dashboard: sales, profit/loss, expenses, deposits over time ----------
+// Categorical slots in fixed order (validated default palette); status green/red only for profit/loss.
+const VIZ = {
+  s1: '#2a78d6', s2: '#eb6834', s3: '#1baf7a', s4: '#eda100',
+  good: '#0ca30c', critical: '#d03b3b',
+  ink: '#0b0b0b', ink2: '#52514e', muted: '#898781', grid: '#e1e0d9', axis: '#c3c2b7', surface: '#fcfcfb',
+};
+const dashCharts = {};
+$('#dashForm').addEventListener('change', () => runDash());
+$('#dashForm').querySelectorAll('[data-range]').forEach((b) => { b.onclick = () => { setRange($('#dashForm'), b.dataset.range); runDash(); }; });
+$('#dashToReports').onclick = (ev) => { ev.preventDefault(); showTab('reports'); };
+
+const rupees = (v) => `₹${Number(v || 0).toLocaleString('en-IN', { maximumFractionDigits: 0 })}`;
+const shortRupees = (v) => {
+  const a = Math.abs(v);
+  const s = a >= 1e7 ? `${(a / 1e7).toFixed(1)}Cr` : a >= 1e5 ? `${(a / 1e5).toFixed(1)}L` : a >= 1e3 ? `${(a / 1e3).toFixed(0)}k` : `${Math.round(a)}`;
+  return `${v < 0 ? '−' : ''}₹${s}`;
+};
+
+function baseOptions({ stacked = false, horizontal = false } = {}) {
+  const valueAxis = {
+    stacked, beginAtZero: true, border: { display: false },
+    grid: { color: VIZ.grid, drawTicks: false }, ticks: { color: VIZ.muted, padding: 6, callback: (v) => shortRupees(v), maxTicksLimit: 6 },
+  };
+  const catAxis = { stacked, grid: { display: false }, border: { color: VIZ.axis }, ticks: { color: VIZ.muted, maxRotation: 0, autoSkipPadding: 12 } };
+  return {
+    responsive: true, maintainAspectRatio: false, animation: { duration: 250 },
+    indexAxis: horizontal ? 'y' : 'x',
+    interaction: { mode: 'index', intersect: false, axis: horizontal ? 'y' : 'x' },
+    plugins: {
+      legend: { position: 'top', align: 'start', labels: { color: VIZ.ink2, boxWidth: 10, boxHeight: 10, useBorderRadius: true, borderRadius: 2, padding: 14 } },
+      tooltip: {
+        backgroundColor: '#ffffff', titleColor: VIZ.ink, bodyColor: VIZ.ink2, borderColor: 'rgba(11,11,11,0.10)', borderWidth: 1,
+        padding: 10, boxPadding: 4, usePointStyle: true,
+        filter: (item) => item.parsed[horizontal ? 'x' : 'y'] !== 0, // leave out series with nothing that period
+        callbacks: { label: (c) => ` ${rupees(c.parsed[horizontal ? 'x' : 'y'])}  ${c.dataset.label}` },
+      },
+    },
+    scales: horizontal ? { x: valueAxis, y: { ...catAxis, ticks: { color: VIZ.ink2 } } } : { x: catAxis, y: valueAxis },
+  };
+}
+// Thin bars with rounded ends and a 2px surface gap between stacked segments.
+const barSet = (label, data, color, extra = {}) => ({
+  label, data, backgroundColor: color, hoverBackgroundColor: color, borderColor: VIZ.surface, borderWidth: { top: 2, bottom: 0, left: 0, right: 0 },
+  borderRadius: 4, borderSkipped: 'start', maxBarThickness: 36, categoryPercentage: 0.7, barPercentage: 0.9, ...extra,
+});
+function drawChart(id, config) {
+  if (dashCharts[id]) dashCharts[id].destroy();
+  dashCharts[id] = new Chart(document.getElementById(id), config);
+}
+
+async function runDash() {
+  if (typeof Chart === 'undefined') { toast('The chart library did not load — check the internet connection'); return; }
+  const f = $('#dashForm');
+  $('#dashCompany').textContent = company()?.name || '';
+  const q = `company_id=${state.companyId}&from=${f.from.value}&to=${f.to.value}&group=${f.group.value}&fy=${f.fy.value}`;
+  try {
+    const r = await api(`/api/reports?${q}`);
+    const t = r.total;
+    const rows = r.rows;
+    const labels = rows.map((x) => x.label);
+    const est = t.pl.estimatedDays;
+    $('#dashNote').textContent = `${t.days} day(s) · ${t.verified} verified${est ? ' · profit estimated (standard dealer commission)' : ''}`;
+    $('#plSub').textContent = `Net profit (above zero) or loss (below), ₹${est ? ' — estimated' : ''}`;
+    const deposits = t.cash.deposits;
+    $('#dashTiles').innerHTML = [
+      ['Total sales', rupees(t.pl.sales)],
+      [`Net ${t.pl.net < 0 ? 'loss' : 'profit'}${est ? ' (est.)' : ''}`, `<span class="${t.pl.net < 0 ? 'loss' : 'profit'}">${t.pl.net < 0 ? '▼' : '▲'} ${rupees(Math.abs(t.pl.net))}</span>`],
+      ['Pump expenses', rupees(t.PEXP)],
+      ['Deposits', rupees(deposits)],
+      ['HSD sold', `${Number(t.HSD).toLocaleString('en-IN', { maximumFractionDigits: 0 })} L`],
+      ['MS sold', `${Number(t.MS).toLocaleString('en-IN', { maximumFractionDigits: 0 })} L`],
+    ].map(([k, v]) => `<div><span>${k}</span><b>${v}</b></div>`).join('');
+    if (!rows.length) {
+      for (const id of Object.keys(dashCharts)) { dashCharts[id].destroy(); delete dashCharts[id]; }
+      $('#dashNote').textContent = 'No days entered in this range yet.';
+      return;
+    }
+
+    drawChart('chSales', { type: 'bar', options: baseOptions({ stacked: true }), data: { labels, datasets: [
+      barSet('HSD', rows.map((x) => x.pl.hsdSales), VIZ.s1),
+      barSet('MS', rows.map((x) => x.pl.msSales), VIZ.s2),
+      barSet('Lube', rows.map((x) => x.pl.lube), VIZ.s3),
+      barSet('Coffee', rows.map((x) => x.pl.coffee), VIZ.s4),
+    ].filter((d) => d.data.some((v) => v)) } });
+
+    // Profit green, loss red — the tooltip also says which, so colour is never the only cue.
+    const net = rows.map((x) => x.pl.net);
+    const plOpts = baseOptions();
+    plOpts.plugins.legend.display = false;
+    plOpts.plugins.tooltip.callbacks.label = (c) => ` ${c.parsed.y < 0 ? 'Loss' : 'Profit'} ${rupees(Math.abs(c.parsed.y))}${est ? ' (estimated)' : ''}`;
+    plOpts.scales.y.grid.color = (ctx) => (ctx.tick.value === 0 ? VIZ.axis : VIZ.grid);
+    drawChart('chPl', { type: 'bar', options: plOpts, data: { labels, datasets: [
+      barSet('Net profit / loss', net, net.map((v) => (v < 0 ? VIZ.critical : VIZ.good)), { borderSkipped: false, borderWidth: 0 }),
+    ] } });
+
+    drawChart('chExp', { type: 'bar', options: baseOptions({ stacked: true }), data: { labels, datasets: [
+      barSet('Pump expenses (P-Exp)', rows.map((x) => x.PEXP), VIZ.s1),
+      barSet('Others payments', rows.map((x) => x.pl.otherPayments), VIZ.s2),
+    ].filter((d) => d.data.some((v) => v)) } });
+
+    drawChart('chDep', { type: 'bar', options: baseOptions({ stacked: true }), data: { labels, datasets: [
+      barSet('Bank', rows.map((x) => x.BANK), VIZ.s1),
+      barSet('PTM (Paytm)', rows.map((x) => x.PTM), VIZ.s2),
+      barSet('UPI', rows.map((x) => x.UPI), VIZ.s3),
+    ].filter((d) => d.data.some((v) => v)) } });
+
+    // Top 12 heads; the rest fold into "Other heads" rather than getting new colours.
+    const heads = t.pl.expenseLines;
+    const top = heads.slice(0, 12);
+    const rest = heads.slice(12).reduce((s, h) => s + h.amount, 0);
+    if (rest) top.push({ label: `Other heads (${heads.length - 12})`, amount: rest });
+    const hOpts = baseOptions({ horizontal: true });
+    hOpts.plugins.legend.display = false;
+    drawChart('chHeads', { type: 'bar', options: hOpts, data: { labels: top.map((h) => h.label), datasets: [
+      barSet('Pump expenses', top.map((h) => h.amount), VIZ.s1, { borderWidth: 0, borderSkipped: 'start', maxBarThickness: 18 }),
+    ] } });
+  } catch (e) { toast(e.message); }
 }
 
 // Start last, after every handler above is defined.
