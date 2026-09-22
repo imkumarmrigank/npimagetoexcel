@@ -203,7 +203,7 @@ const COLS = [
   ['K', 'Collection', 'COLL', 'in'], ['L', 'Total', 'L'], ['M', 'T-Exp', 'M', 'out'], ['N', 'Bank', 'BANK', 'out'], ['O', 'PTM', 'PTM', 'out'],
   ['P', 'UPI', 'UPI', 'out'], ['Q', 'T-Sale', 'TSALE', 'out'], ['R', 'Fleet', 'FLEET', 'out'], ['S', 'R-Babu', 'RBABU', 'out'],
   ['T', 'Ranjit', 'RANJIT', 'out'], ['U', 'Others', 'OTHERS', 'out'], ['V', 'Total', 'V', 'out'], ['W', 'P-Exp', 'PEXP', 'out'],
-  ['X', 'Total', 'M', 'out'], ['Y', 'Balance', 'closing'], ['Z', 'Cash in hand (image)', 'CASH'],
+  ['X', 'Total', 'M', 'out'], ['Y', 'Balance', 'closing'], ['Z', 'Closing balance (report)', 'CASH'],
 ];
 
 function renderSummary() {
@@ -388,6 +388,22 @@ function diffClues(diff, lines) {
   return clues;
 }
 
+// The next day's opening cash tells which side is right: if it equals this day's closing balance,
+// the closing balance is right and a row (or the printed total) is wrong.
+function closingClues(c, e) {
+  const day = Number(e.day ?? state.entry?.day);
+  const next = state.summary?.entries.find((x) => x.day === day + 1);
+  if (!next || !Number.isFinite(Number(c.expected))) return [];
+  const ob = Number(next.row.OB);
+  if (Math.abs(ob - c.expected) <= 1.5) {
+    return [`Day ${day + 1} opens with ${fmt(ob)}, the same as this closing balance — so the closing balance is right, and a row here is wrong by ${fmt(Math.abs(c.diff))} (or a row is missing). Compare each row with the image, or with your Excel.`];
+  }
+  if (Math.abs(ob - c.actual) <= 1.5) {
+    return [`Day ${day + 1} opens with ${fmt(ob)}, which matches what the rows give — so the rows are right and the closing balance on the report is wrong. Correct “Closing balance (cash in hand)”.`];
+  }
+  return [];
+}
+
 function explain(c, e) {
   const d = Math.abs(c.diff ?? 0);
   const side = (s) => e.lines.filter((l) => l.side === s);
@@ -408,10 +424,11 @@ function explain(c, e) {
       };
     case 'cash':
       return {
-        why: `Inflow − expenses from the rows gives ${fmt(c.actual)}, but the image says cash in hand is ${fmt(c.expected)} (difference ${fmt(d)}).`,
+        why: `Inflow − expenses from the rows gives ${fmt(c.actual)}, but the report's closing balance (cash in hand) is ${fmt(c.expected)} (difference ${fmt(d)}).`,
         fix: e.computed?.checks.some((x) => (x.id === 'inflow' || x.id === 'expense') && x.status === 'error')
           ? 'This follows from the inflow/expense mismatch above — fix that first and this usually clears.'
-          : 'The rows balance but the printed cash in hand does not: check “Printed cash in hand” against the image, or the cash counted on the day.',
+          : 'The rows balance but the closing balance does not: check “Closing balance (cash in hand)” against the report, or the cash actually counted at the end of the day. The next day’s opening cash should match it.',
+        clues: closingClues(c, e),
       };
     case 'HSD_amt':
     case 'MS_amt': {
@@ -542,7 +559,7 @@ document.querySelectorAll('[data-add]').forEach((b) => b.onclick = () => {
 function liveSums() {
   const sum = (side) => state.entry.lines.filter((l) => l.side === side).reduce((s, l) => s + (Number(l.amount) || 0), 0);
   const i = sum('in'), o = sum('out');
-  $('#liveSums').textContent = `Lines add up to: inflow ${fmt(i) || 0} · expenses ${fmt(o) || 0} · cash in hand ${fmt(i - o) || 0}`;
+  $('#liveSums').textContent = `Lines add up to: inflow ${fmt(i) || 0} · expenses ${fmt(o) || 0} · closing balance ${fmt(i - o) || 0}`;
   liveCheck(i, o);
   scheduleRecheck();
 }
@@ -604,7 +621,7 @@ function liveCheck(sumIn, sumOut) {
   };
   cmp('#rTin', '#hTin', val('#rTin'), sumIn, 'Total inflow', 'in');
   cmp('#rTex', '#hTex', val('#rTex'), sumOut, 'Total expenses', 'out');
-  cmp('#rCash', '#hCash', val('#rCash'), sumIn - sumOut, 'Cash in hand');
+  cmp('#rCash', '#hCash', val('#rCash'), sumIn - sumOut, 'Closing balance');
 
   // HSD / MS: units × rate must equal the amount on the same row.
   for (const l of e.lines.filter((x) => x.side === 'in' && (x.col === 'HSD' || x.col === 'MS'))) {
@@ -617,7 +634,7 @@ function liveCheck(sumIn, sumOut) {
     }
   }
 
-  // Opening cash vs the previous day's cash in hand: a warning the user can accept once checked.
+  // Opening cash vs the previous day's closing balance: a warning the user can accept once checked.
   const ob = e.computed?.checks.find((c) => c.id === 'ob' && c.status === 'warn');
   const obLine = e.lines.find((l) => l.side === 'in' && l.col === 'OB');
   if (ob && obLine) document.querySelector(`tr[data-lid="${obLine.id}"] input[data-f="amount"]`)?.classList.add('warn');
@@ -647,7 +664,7 @@ function renderComputed(c) {
   const r = c.row;
   renderHowFix(c);
   $('#rRow').innerHTML = [['OB', r.openingUsed], ['HSD', r.HSD], ['Rate', r.HSD_RATE], ['MS', r.MS], ['Rate', r.MS_RATE], ['Lub', r.LUB], ['Cofee', r.COFFEE], ['Collection', r.COLL],
-    ['T-Exp', r.M], ['Bank', r.BANK], ['PTM', r.PTM], ['UPI', r.UPI], ['T-Sale', r.TSALE], ['Fleet', r.FLEET], ['R-Babu', r.RBABU], ['Ranjit', r.RANJIT], ['Others', r.OTHERS], ['P-Exp', r.PEXP], ['Balance (carried)', r.closing], ['Cash in hand (image)', r.CASH]]
+    ['T-Exp', r.M], ['Bank', r.BANK], ['PTM', r.PTM], ['UPI', r.UPI], ['T-Sale', r.TSALE], ['Fleet', r.FLEET], ['R-Babu', r.RBABU], ['Ranjit', r.RANJIT], ['Others', r.OTHERS], ['P-Exp', r.PEXP], ['Balance (worked out)', r.closing], ['Closing balance (report)', r.CASH]]
     .filter(([, v]) => Number(v)).map(([k, v]) => `<div><b>${k}</b>${fmt(v)}</div>`).join('');
 }
 
@@ -655,7 +672,7 @@ async function saveEntry(status, { verify = false, close = false } = {}) {
   const e = state.entry;
   // Never save a figure that couldn't be read: point at it instead.
   const badLine = e.lines.find((l) => l._bad && Object.values(l._bad).some(Boolean));
-  const badPrinted = [['#rTin', 'Printed total inflow'], ['#rTex', 'Printed total expenses'], ['#rCash', 'Printed cash in hand']]
+  const badPrinted = [['#rTin', 'Printed total inflow'], ['#rTex', 'Printed total expenses'], ['#rCash', 'Closing balance (cash in hand)']]
     .find(([id]) => Number.isNaN(parseAmount($(id).value)));
   if (badLine || badPrinted) {
     const what = badPrinted ? badPrinted[1] : `${badLine.label || 'a row'} (${Object.keys(badLine._bad).filter((k) => badLine._bad[k]).join(', ')})`;
@@ -1196,7 +1213,7 @@ async function runRecon() {
     const cash = t.lastCash ?? null;
     const diff = cash === null ? null : cash - balance;
     const cashNote = cash === null ? '' : `
-      <tr><td colspan="5"></td><td>Cash in hand on image (${dmy(t.lastDate)})</td><td>${fmt(cash)}</td></tr>
+      <tr><td colspan="5"></td><td>Closing balance on the report (${dmy(t.lastDate)})</td><td>${fmt(cash)}</td></tr>
       <tr class="${Math.abs(diff) > 1 ? 'recon-bad' : 'recon-ok'}"><td colspan="5"></td><td>Difference</td><td>${fmt(diff) || '0.00'}</td></tr>`;
     // Real differences (₹1 or more) listed by day; paise-level rounding lumped together, plus the
     // small effect of the sheet using units × rate for HSD/MS, so the table adds up to the difference.
@@ -1205,12 +1222,12 @@ async function runRecon() {
     const bigSum = big.reduce((s2, g) => s2 + g.amount, 0);
     const rounding = diff === null ? 0 : Math.round((diff - bigSum) * 100) / 100;
     const gapRows = big.map((g) => `<tr><td>${dmy(g.date)}</td><td>${g.kind === 'day'
-      ? "This day's printed cash in hand doesn't match its own rows (inflow − expenses)"
-      : "Opening cash differs from the previous day's cash in hand"}</td><td>${money(g.amount)}</td></tr>`).join('')
+      ? "This day's closing balance doesn't match its own rows (inflow − expenses)"
+      : "Opening cash differs from the previous day's closing balance"}</td><td>${money(g.amount)}</td></tr>`).join('')
       + (Math.abs(rounding) >= 0.01 ? `<tr><td class="muted">${small.length} small</td><td class="muted">Paise rounding on the reports, and HSD/MS worked out as units × rate</td><td>${money(rounding)}</td></tr>` : '');
     const why = cash !== null && Math.abs(diff) > 1
       ? `<div class="fix-item warn" style="margin-top:12px">
-         <div><b>Why the difference:</b> the Cash Balance is worked out from the day-by-day figures, while cash in hand is what the last day's report says. The difference is made up exactly of these days:</div>
+         <div><b>Why the difference:</b> the Cash Balance is worked out from the day-by-day figures, while the closing balance is the cash the last day's report says was left at the pump. The difference is made up exactly of these days:</div>
          <table class="pl" style="margin:6px 0"><thead><tr><th>Date</th><th>What happened</th><th>Amount</th></tr></thead><tbody>${gapRows}</tbody>
            <tfoot><tr><td></td><td><b>Total (= difference)</b></td><td><b>${money(bigSum + rounding)}</b></td></tr></tfoot></table>
          <div><b>How to fix:</b> open those days (see the Errors menu). Red days: an amount was typed or printed wrong. Amber opening differences: correct the opening cash, or press “Accept difference” if cash really was added or taken out — accepted differences still show here, because they are real cash movements outside the sheet.</div></div>` : '';

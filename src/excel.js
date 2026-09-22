@@ -208,7 +208,7 @@ async function buildReconWorkbook(title, t) {
   ws.getCell(`G${tr + 2}`).value = { formula: `D${tr}-G${tr}` };
   ws.getCell(`F${tr + 2}`).font = ws.getCell(`G${tr + 2}`).font = { bold: true };
   if (t.lastCash !== null && t.lastCash !== undefined) {
-    ws.getCell(`F${tr + 3}`).value = `Cash in hand on image (${t.lastDate})`;
+    ws.getCell(`F${tr + 3}`).value = `Closing balance on the report (${t.lastDate})`;
     ws.getCell(`G${tr + 3}`).value = t.lastCash;
     ws.getCell(`F${tr + 4}`).value = 'Difference';
     ws.getCell(`G${tr + 4}`).value = { formula: `G${tr + 3}-G${tr + 2}` };
