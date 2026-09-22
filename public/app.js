@@ -220,16 +220,21 @@ function renderSummary() {
   for (const e of s.entries) if (e.day) (byDay.get(e.day) || byDay.set(e.day, []).get(e.day)).push(e);
   const head = `<thead><tr>${COLS.map(([, h, , g]) => `<th class="${g ? `grp-${g}` : ''}">${h}</th>`).join('')}<th>Status</th></tr></thead>`;
   let body = '';
+  // Cells that don't match the day's report: column letter → { level, tip }.
   const badCells = (e) => {
-    const bad = new Set();
+    const bad = new Map();
+    const tip = (c, what) => `${what}: report ${fmt(c.expected) || '0.00'} · worked out from the rows ${fmt(c.actual) || '0.00'} · difference ${fmt(Math.abs(c.diff)) || '0.00'}`;
+    const mark = (cols, level, text) => cols.forEach((x) => bad.set(x, { level, tip: text }));
     for (const c of e.checks) {
-      if (c.status !== 'error') continue;
-      if (c.id === 'inflow') ['L'].forEach((x) => bad.add(x));
-      if (c.id === 'expense') ['M', 'X'].forEach((x) => bad.add(x));
-      if (c.id === 'cash') bad.add('Z');
-      if (c.id === 'HSD_amt') ['C', 'E'].forEach((x) => bad.add(x));
-      if (c.id === 'MS_amt') ['F', 'H'].forEach((x) => bad.add(x));
-      if (c.id === 'date') bad.add('A');
+      if (c.status === 'error') {
+        if (c.id === 'inflow') mark(['L'], 'bad', tip(c, 'Total inflow'));
+        if (c.id === 'expense') mark(['M', 'X'], 'bad', tip(c, 'Total expenses'));
+        if (c.id === 'cash') mark(['Z'], 'bad', tip(c, 'Closing balance'));
+        if (c.id === 'HSD_amt') mark(['C', 'E'], 'bad', `HSD units × rate = ${fmt(c.actual)}, but the amount on the report is ${fmt(c.expected)}`);
+        if (c.id === 'MS_amt') mark(['F', 'H'], 'bad', `MS units × rate = ${fmt(c.actual)}, but the amount on the report is ${fmt(c.expected)}`);
+        if (c.id === 'date') mark(['A'], 'bad', c.detail || 'Date problem');
+      }
+      if (c.status === 'warn' && c.id === 'ob') mark(['B'], 'warn', c.detail || 'Opening cash differs from the previous day’s closing balance');
     }
     return bad;
   };
@@ -255,7 +260,8 @@ function renderSummary() {
           : `Balance ${fmt(e.row.closing)} ≠ report ${fmt(e.row.CASH)} (difference ${fmt(g.gap)}), carried forward from day ${g.from}. Nothing new on this day.`;
         return `<td class="${g.cause ? 'cell-bad' : 'cell-carried'}" title="${esc(tip)}">${fmt(e.row[k])}</td>`;
       }
-      return `<td class="${bad.has(c) ? 'cell-bad' : ''}">${c === 'A' ? label : fmt(e.row[k])}</td>`;
+      const b = bad.get(c);
+      return `<td class="${b ? (b.level === 'warn' ? 'cell-warn' : 'cell-bad') : ''}"${b ? ` title="${esc(b.tip)}"` : ''}>${c === 'A' ? label : fmt(e.row[k])}</td>`;
     }).join('')}
     <td class="status">${e.source === 'manual' ? badge('skip', 'manual') : ''} ${badge(e.status, e.status === 'verified' ? 'verified' : 'review')} ${e.errors ? badge('error', `${e.errors} mismatch`) : ''} ${e.warnings ? badge('warn', `${e.warnings} warn`) : ''}</td></tr>`; };
   for (let d = 1; d <= s.daysInMonth; d++) {
