@@ -392,14 +392,18 @@ app.delete('/api/tally/:cid/template', wrap(async (req, res) => {
   res.json(await tally.getSettings(Number(req.params.cid)));
 }));
 app.put('/api/tally/:cid/settings', wrap(async (req, res) => {
-  const { columns = {}, ledgers = {}, labels = {}, cash_ledger } = req.body || {};
+  const { columns = {}, ledgers = {}, labels = {}, cash_ledger, format, tally_company, groups = {} } = req.body || {};
+  if (format && !['xml', 'xlsx'].includes(format)) throw fail(400, 'Unknown format');
+  if (!Object.values(groups).every((g) => !g || tally.TALLY_GROUPS.includes(g))) throw fail(400, 'Unknown Tally group');
   const okField = (f) => !f || Object.prototype.hasOwnProperty.call(tally.FIELDS, f);
   if (!Object.values(columns).every(okField)) throw fail(400, 'Unknown field in column mapping');
   const cleanLabels = Object.fromEntries(Object.entries(labels).map(([k, v]) => [k.toUpperCase().replace(/\s+/g, ' ').trim(), String(v || '').trim()]).filter(([k, v]) => k && v));
   await db.query(
-    `INSERT INTO tally_settings (company_id, columns, ledgers, labels, cash_ledger) VALUES ($1,$2,$3,$4,$5)
-     ON CONFLICT (company_id) DO UPDATE SET columns=EXCLUDED.columns, ledgers=EXCLUDED.ledgers, labels=EXCLUDED.labels, cash_ledger=EXCLUDED.cash_ledger, updated_at=now()`,
-    [req.params.cid, JSON.stringify(columns), JSON.stringify(ledgers), JSON.stringify(cleanLabels), String(cash_ledger || 'Cash').trim() || 'Cash']);
+    `INSERT INTO tally_settings (company_id, columns, ledgers, labels, cash_ledger, format, tally_company, groups) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+     ON CONFLICT (company_id) DO UPDATE SET columns=EXCLUDED.columns, ledgers=EXCLUDED.ledgers, labels=EXCLUDED.labels, cash_ledger=EXCLUDED.cash_ledger,
+       format=EXCLUDED.format, tally_company=EXCLUDED.tally_company, groups=EXCLUDED.groups, updated_at=now()`,
+    [req.params.cid, JSON.stringify(columns), JSON.stringify(ledgers), JSON.stringify(cleanLabels), String(cash_ledger || 'Cash').trim() || 'Cash',
+      format || 'xml', String(tally_company || '').trim() || null, JSON.stringify(groups)]);
   res.json(await tally.getSettings(Number(req.params.cid)));
 }));
 app.get('/api/tally/:cid/preview', wrap(async (req, res) => {
@@ -420,7 +424,26 @@ app.get('/api/tally/:cid/batches', wrap(async (req, res) => {
 app.get('/api/tally/batches/:id/file', wrap(async (req, res) => {
   const b = (await db.query('SELECT file, file_name FROM tally_batches WHERE id=$1', [req.params.id])).rows[0];
   if (!b) throw fail(404, 'Batch not found');
+  if (/\.xml$/i.test(b.file_name)) {
+    res.setHeader('Content-Type', 'application/xml; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="${b.file_name}"`);
+    return res.send(b.file);
+  }
   sendXlsx(res, b.file_name.replace(/\.xlsx$/i, ''), b.file);
+}));
+// Ledger masters XML: import once in Tally (Import of Data > Masters) so the vouchers' ledgers exist.
+app.get('/api/tally/:cid/masters', wrap(async (req, res) => {
+  const { from, to } = rangeOf(req.query);
+  const m = await tally.mastersFile(Number(req.params.cid), from, to);
+  res.json({ ledgers: m.ledgers });
+}));
+app.get('/api/tally/:cid/masters.xml', wrap(async (req, res) => {
+  const { from, to } = rangeOf(req.query);
+  const m = await tally.mastersFile(Number(req.params.cid), from, to);
+  if (!m.ledgers.length) throw fail(400, 'No verified days in this range, so there are no ledgers to create yet');
+  res.setHeader('Content-Type', 'application/xml; charset=utf-8');
+  res.setHeader('Content-Disposition', `attachment; filename="${`${m.company} Tally ledger masters ${from} to ${to}.xml`.replace(/[^\w .()-]+/g, '_')}"`);
+  res.send(m.file);
 }));
 // Unlock: the days can be corrected and exported again. The user must delete this batch's vouchers in Tally first.
 app.post('/api/tally/batches/:id/unlock', wrap(async (req, res) => {

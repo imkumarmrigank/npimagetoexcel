@@ -1284,6 +1284,11 @@ async function openTally() {
 
 function renderTallySettings() {
   const t = state.tally;
+  $('#tallyFormat').value = t.format || 'xml';
+  $('#tallyCompanyName').value = t.tally_company || '';
+  const isXml = (t.format || 'xml') === 'xml';
+  $('#xmlHelp').classList.toggle('hidden', !isXml);
+  $('#tplBlock').classList.toggle('hidden', isXml);
   $('#tplInfo').innerHTML = t.has_template
     ? `Using <b>${esc(t.template_name)}</b> (sheet “${esc(t.sheet)}”, headings on row ${t.header_row}). Match each column of your template to what should go in it:`
     : 'No template uploaded — the file will use a simple layout: Date, Voucher Type, Voucher No, Debit Ledger, Credit Ledger, Amount, Quantity, Rate, Narration. Upload your Tally import Excel to use its columns instead.';
@@ -1294,24 +1299,31 @@ function renderTallySettings() {
     <p class="muted small">If your template has one “Ledger” column with “Dr/Cr”, each voucher is written as two rows (debit, then credit).</p>` : '';
   $('#cashLedger').value = t.cash_ledger || 'Cash';
   const cols = [...state.meta.inflowCols.filter((c) => c.key !== 'OB'), ...state.meta.expenseCols];
-  $('#ledgerMap').innerHTML = `<table class="pl" style="max-width:760px"><thead><tr><th>Sheet column</th><th>Tally ledger</th><th>Voucher type</th></tr></thead><tbody>
-    ${cols.map((c) => { const l = t.ledgers[c.key] || {}; return `<tr data-lcol="${c.key}"><td>${esc(c.label)}</td>
+  $('#ledgerMap').innerHTML = `<table class="pl" style="max-width:900px"><thead><tr><th>Sheet column</th><th>Tally ledger</th><th>Voucher type</th><th>Tally group (for new ledgers)</th></tr></thead><tbody>
+    ${cols.map((c) => { const l = t.ledgers[c.key] || {}; const g = t.groups[c.key]; return `<tr data-lcol="${c.key}"><td>${esc(c.label)}</td>
       <td><input name="ledger" value="${esc(l.ledger || '')}" placeholder="use the particulars as ledger"></td>
-      <td><select name="voucher">${VOUCHER_TYPES.map((v) => `<option ${v === l.voucher ? 'selected' : ''}>${v}</option>`).join('')}</select></td></tr>`; }).join('')}</tbody></table>`;
+      <td><select name="voucher">${VOUCHER_TYPES.map((v) => `<option ${v === l.voucher ? 'selected' : ''}>${v}</option>`).join('')}</select></td>
+      <td><select name="group">${t.tallyGroups.map((x) => `<option ${x === g ? 'selected' : ''}>${esc(x)}</option>`).join('')}</select></td></tr>`; }).join('')}</tbody></table>
+    <p class="muted small">Ledger names must match Tally exactly (spelling and spaces). The group is only used when the ledger masters file creates a ledger that isn't in Tally yet.</p>`;
 }
 
 function collectTallySettings() {
   const columns = {};
   document.querySelectorAll('[data-tplcol]').forEach((s2) => { columns[s2.dataset.tplcol] = s2.value; });
   const ledgers = {};
-  document.querySelectorAll('[data-lcol]').forEach((tr) => { ledgers[tr.dataset.lcol] = { ledger: tr.querySelector('[name=ledger]').value.trim(), voucher: tr.querySelector('[name=voucher]').value }; });
+  const groups = {};
+  document.querySelectorAll('[data-lcol]').forEach((tr) => {
+    ledgers[tr.dataset.lcol] = { ledger: tr.querySelector('[name=ledger]').value.trim(), voucher: tr.querySelector('[name=voucher]').value };
+    groups[tr.dataset.lcol] = tr.querySelector('[name=group]').value;
+  });
   const labels = { ...(state.tally.labels || {}) };
   document.querySelectorAll('[data-label]').forEach((i) => { const v = i.value.trim(); if (v) labels[i.dataset.label] = v; else delete labels[i.dataset.label]; });
-  return { columns: state.tally.has_template ? columns : {}, ledgers, labels, cash_ledger: $('#cashLedger').value.trim() || 'Cash' };
+  return { columns: state.tally.has_template ? columns : {}, ledgers, labels, groups, cash_ledger: $('#cashLedger').value.trim() || 'Cash',
+    format: $('#tallyFormat').value, tally_company: $('#tallyCompanyName').value.trim() };
 }
 async function saveTally(quiet) {
   const t = state.tally;
-  if (t.has_template) {
+  if (t.has_template && $('#tallyFormat').value === 'xlsx') {
     const used = Object.values(collectTallySettings().columns);
     const hasLedger = used.includes('ledger') || (used.includes('dr_ledger') && used.includes('cr_ledger'));
     const hasAmount = used.includes('amount') || used.includes('debit') || used.includes('credit');
@@ -1323,6 +1335,7 @@ async function saveTally(quiet) {
   return true;
 }
 $('#tallySave').onclick = () => saveTally(false).catch((e) => toast(e.message));
+$('#tallyFormat').onchange = () => { state.tally.format = $('#tallyFormat').value; saveTally(true).then(() => toast('Format saved')).catch((e) => toast(e.message)); };
 $('#tplUpload').onclick = async () => {
   const file = $('#tplFile').files[0];
   if (!file) return toast('Choose your Tally template (.xlsx) first');
@@ -1361,7 +1374,8 @@ async function tallyPreview() {
       ${p.vouchers.length ? `<div class="table-wrap" style="max-height:420px;margin-top:10px"><table class="sheet"><thead><tr><th>Date</th><th>Type</th><th>Voucher no</th><th>Debit ledger</th><th>Credit ledger</th><th>Amount</th><th>Particulars</th></tr></thead><tbody>${vrows}</tbody></table></div>
         ${p.vouchers.length > 200 ? `<p class="muted small">Showing 200 of ${p.vouchers.length}.</p>` : ''}
         <div class="review-actions" style="position:static"><span class="muted small">Check the ledger names above match Tally exactly. Creating the file locks these ${p.included.length} day(s).</span><span class="spacer"></span>
-        <button class="primary" id="tallyCreate">Create Tally file</button></div>` : '<p class="muted">Nothing to send for this range.</p>'}`;
+        ${$('#tallyFormat').value === 'xml' ? `<a class="btn" href="/api/tally/${state.companyId}/masters.xml?from=${f.from.value}&to=${f.to.value}" title="Import once in Tally: Import of Data → Masters">Ledger masters (XML)</a>` : ''}
+        <button class="primary" id="tallyCreate">Create ${$('#tallyFormat').value === 'xml' ? 'Tally ERP 9 vouchers file (XML)' : 'Tally Excel file'}</button></div>` : '<p class="muted">Nothing to send for this range.</p>'}`;
     $('#tallyPreview').querySelectorAll('[data-openid]').forEach((b) => { b.onclick = () => openReview(Number(b.dataset.openid)); });
     $('#tallyCreate')?.addEventListener('click', async () => {
       if (!confirm(`Create the Tally file for ${p.included.length} verified day(s), ${p.totals.vouchers} vouchers?\n\nThese days will be locked so they can't be sent twice.`)) return;

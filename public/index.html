@@ -201,7 +201,30 @@
           creating a file locks its days. If a day must change later, unlock its batch below — and delete that batch's vouchers in Tally before importing again.</p>
       </div>
       <div class="card">
-        <h3>1. Your Tally import template</h3>
+        <h3>1. File for Tally</h3>
+        <div class="fields" style="max-width:760px">
+          <label>Format
+            <select id="tallyFormat">
+              <option value="xml">Tally ERP 9 / TallyPrime — XML import (recommended)</option>
+              <option value="xlsx">Excel (for other software, using a template)</option>
+            </select>
+          </label>
+          <label>Company name exactly as in Tally <input id="tallyCompanyName" placeholder="leave blank = the company open in Tally"></label>
+        </div>
+        <div id="xmlHelp" class="fix-item" style="margin-top:10px">
+          <b>How to import into Tally ERP 9</b>
+          <ol style="margin:4px 0 0;padding-left:18px">
+            <li>Open the company in Tally. First time only (or when new ledgers appear): download <b>Ledger masters (XML)</b> below, then in Tally go to
+              <b>Gateway of Tally → Import of Data → Masters</b>, type the file's full path (e.g. <code>C:\Tally\ledgers.xml</code>), and choose
+              <b>Ignore Duplicates</b> when asked about existing masters.</li>
+            <li>Download the <b>vouchers file</b> (step 3). In Tally: <b>Gateway of Tally → Import of Data → Vouchers</b>, give the file's path, press Enter.</li>
+            <li>Tally shows how many vouchers were created and any errors. An error usually means a ledger name here doesn't match Tally exactly —
+              fix the name in step 2 (or create the ledger in Tally), then unlock the batch below and export again.</li>
+          </ol>
+          <div class="small muted" style="margin-top:4px">Tip: copy the file into Tally's folder (e.g. <code>C:\Tally.ERP9</code>) and just type its file name. Take a Tally backup before the first import.</div>
+        </div>
+        <div id="tplBlock">
+        <h4>Excel template</h4>
         <div id="tplInfo" class="small"></div>
         <div class="manual" style="border:0;margin:8px 0;padding:0">
           <input id="tplFile" type="file" accept=".xlsx" style="width:auto">
@@ -209,6 +232,7 @@
           <button id="tplRemove" class="ghost danger hidden">Remove template (use the default layout)</button>
         </div>
         <div id="tplMap"></div>
+        </div>
       </div>
       <div class="card">
         <h3>2. Tally ledger names</h3>

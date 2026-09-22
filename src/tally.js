@@ -65,6 +65,16 @@ const DEFAULT_LEDGERS = {
   PEXP: { ledger: '', voucher: 'Payment' },
 };
 
+// Tally group each column's ledgers go under, for the ledger masters file (Tally's built-in groups).
+const DEFAULT_GROUPS = {
+  HSD: 'Sales Accounts', MS: 'Sales Accounts', LUB: 'Sales Accounts', COFFEE: 'Sales Accounts',
+  COLL: 'Sundry Debtors', BANK: 'Bank Accounts', PTM: 'Bank Accounts', UPI: 'Bank Accounts',
+  TSALE: 'Sundry Debtors', FLEET: 'Sundry Debtors', RBABU: 'Sundry Debtors', RANJIT: 'Sundry Debtors',
+  OTHERS: 'Sundry Debtors', PEXP: 'Indirect Expenses',
+};
+const TALLY_GROUPS = ['Sales Accounts', 'Direct Incomes', 'Indirect Incomes', 'Bank Accounts', 'Cash-in-Hand', 'Sundry Debtors',
+  'Sundry Creditors', 'Indirect Expenses', 'Direct Expenses', 'Loans & Advances (Asset)', 'Loans (Liability)', 'Current Liabilities', 'Suspense A/c'];
+
 async function readTemplate(buffer) {
   const wb = new ExcelJS.Workbook();
   await wb.xlsx.load(buffer);
@@ -84,14 +94,14 @@ async function readTemplate(buffer) {
 }
 
 async function getSettings(companyId) {
-  const r = await db.query('SELECT company_id, template IS NOT NULL AS has_template, template, template_name, sheet, header_row, columns, ledgers, labels, cash_ledger FROM tally_settings WHERE company_id=$1', [companyId]);
-  const s = r.rows[0] || { company_id: companyId, has_template: false, template: null, columns: {}, ledgers: {}, labels: {}, cash_ledger: 'Cash' };
+  const r = await db.query('SELECT company_id, template IS NOT NULL AS has_template, template, template_name, sheet, header_row, columns, ledgers, labels, cash_ledger, format, tally_company, groups FROM tally_settings WHERE company_id=$1', [companyId]);
+  const s = r.rows[0] || { company_id: companyId, has_template: false, template: null, columns: {}, ledgers: {}, labels: {}, cash_ledger: 'Cash', format: 'xml', tally_company: null, groups: {} };
   let headers = [];
   if (s.template) {
     try { headers = (await readTemplate(s.template)).headers; } catch { headers = []; }
   }
   const { template, ...rest } = s;
-  return { ...rest, headers, ledgers: { ...DEFAULT_LEDGERS, ...(s.ledgers || {}) }, fields: FIELDS };
+  return { ...rest, format: s.format || 'xml', headers, ledgers: { ...DEFAULT_LEDGERS, ...(s.ledgers || {}) }, groups: { ...DEFAULT_GROUPS, ...(s.groups || {}) }, fields: FIELDS, tallyGroups: TALLY_GROUPS };
 }
 
 const pad = (v) => String(v).padStart(2, '0');
@@ -226,6 +236,94 @@ async function buildFile(settings, template, vouchers) {
   return wb.xlsx.writeBuffer();
 }
 
+// --- Tally ERP 9 XML (Gateway of Tally > Import of Data) ---
+// Non-ASCII characters become numeric entities, so the file imports whatever Tally's code page.
+const xml = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;' }[c]))
+  .replace(/[^\x09\x0A\x0D\x20-\x7E]/g, (c) => `&#${c.codePointAt(0)};`);
+const amt = (v) => (Math.round(v * 100) / 100).toFixed(2);
+function envelope(reportName, company, body) {
+  return `<ENVELOPE>
+ <HEADER>
+  <TALLYREQUEST>Import Data</TALLYREQUEST>
+ </HEADER>
+ <BODY>
+  <IMPORTDATA>
+   <REQUESTDESC>
+    <REPORTNAME>${reportName}</REPORTNAME>
+${company ? `    <STATICVARIABLES>\n     <SVCURRENTCOMPANY>${xml(company)}</SVCURRENTCOMPANY>\n    </STATICVARIABLES>\n` : ''}   </REQUESTDESC>
+   <REQUESTDATA>
+${body}
+   </REQUESTDATA>
+  </IMPORTDATA>
+ </BODY>
+</ENVELOPE>
+`;
+}
+// One accounting voucher per ledger line: Tally shows a debit as a negative amount with
+// ISDEEMEDPOSITIVE Yes, and a credit as a positive amount with ISDEEMEDPOSITIVE No.
+function buildXml(settings, vouchers) {
+  const body = vouchers.map((v) => {
+    const date = v.date.replace(/-/g, '');
+    const qty = v.qty ? ` (${v.qty} ltr @ ${v.rate})` : '';
+    return `    <TALLYMESSAGE xmlns:UDF="TallyUDF">
+     <VOUCHER VCHTYPE="${xml(v.voucher_type)}" ACTION="Create" OBJVIEW="Accounting Voucher View">
+      <DATE>${date}</DATE>
+      <EFFECTIVEDATE>${date}</EFFECTIVEDATE>
+      <VOUCHERTYPENAME>${xml(v.voucher_type)}</VOUCHERTYPENAME>
+      <VOUCHERNUMBER>${xml(v.voucher_no)}</VOUCHERNUMBER>
+      <PERSISTEDVIEW>Accounting Voucher View</PERSISTEDVIEW>
+      <ISINVOICE>No</ISINVOICE>
+      <NARRATION>${xml(`${v.particulars}${qty} - daily report ${v.date.split('-').reverse().join('-')} - ${v.voucher_no}`)}</NARRATION>
+      <ALLLEDGERENTRIES.LIST>
+       <LEDGERNAME>${xml(v.dr_ledger)}</LEDGERNAME>
+       <ISDEEMEDPOSITIVE>Yes</ISDEEMEDPOSITIVE>
+       <AMOUNT>-${amt(v.amount)}</AMOUNT>
+      </ALLLEDGERENTRIES.LIST>
+      <ALLLEDGERENTRIES.LIST>
+       <LEDGERNAME>${xml(v.cr_ledger)}</LEDGERNAME>
+       <ISDEEMEDPOSITIVE>No</ISDEEMEDPOSITIVE>
+       <AMOUNT>${amt(v.amount)}</AMOUNT>
+      </ALLLEDGERENTRIES.LIST>
+     </VOUCHER>
+    </TALLYMESSAGE>`;
+  }).join('\n');
+  return Buffer.from(envelope('Vouchers', settings.tally_company, body), 'utf8');
+}
+// Ledger masters for every ledger the vouchers use (Tally's own "Cash" ledger is left alone).
+function ledgerList(settings, vouchers) {
+  const cash = settings.cash_ledger || 'Cash';
+  const map = new Map();
+  for (const v of vouchers) {
+    for (const name of [v.dr_ledger, v.cr_ledger]) {
+      if (name === cash || map.has(name)) continue;
+      map.set(name, { name, group: settings.groups[v.col] || DEFAULT_GROUPS[v.col] || 'Suspense A/c', col: v.col });
+    }
+  }
+  return [...map.values()].sort((a, b) => a.group.localeCompare(b.group) || a.name.localeCompare(b.name));
+}
+function buildMastersXml(settings, vouchers) {
+  const body = ledgerList(settings, vouchers).map((l) => `    <TALLYMESSAGE xmlns:UDF="TallyUDF">
+     <LEDGER NAME="${xml(l.name)}" ACTION="Create">
+      <NAME.LIST>
+       <NAME>${xml(l.name)}</NAME>
+      </NAME.LIST>
+      <PARENT>${xml(l.group)}</PARENT>
+      <ISBILLWISEON>No</ISBILLWISEON>
+      <AFFECTSSTOCK>No</AFFECTSSTOCK>
+     </LEDGER>
+    </TALLYMESSAGE>`).join('\n');
+  return Buffer.from(envelope('All Masters', settings.tally_company, body), 'utf8');
+}
+
+// Ledger masters for every verified day in a range (sent to Tally already or not).
+async function mastersFile(companyId, from, to) {
+  const settings = await getSettings(companyId);
+  const company = (await db.query('SELECT name FROM companies WHERE id=$1', [companyId])).rows[0]?.name;
+  const days = (await daysInRange(companyId, from, to)).filter((d) => d.status === 'verified');
+  const vouchers = days.flatMap((d) => vouchersFor(d, settings, prefixFor(company)));
+  return { company, ledgers: ledgerList(settings, vouchers), file: buildMastersXml(settings, vouchers) };
+}
+
 // Create a batch: lock the days first (only ones still unlocked), then build the file from exactly those.
 async function exportBatch(companyId, from, to, includeErrors) {
   const pv = await preview(companyId, from, to, includeErrors);
@@ -241,9 +339,14 @@ async function exportBatch(companyId, from, to, includeErrors) {
     const batchId = b.rows[0].id;
     const locked = await client.query('UPDATE entries SET tally_batch_id=$1 WHERE id = ANY($2) AND tally_batch_id IS NULL AND status = $3 RETURNING id', [batchId, ids, 'verified']);
     if (locked.rowCount !== ids.length) throw Object.assign(new Error('Some days changed or were exported by someone else while preparing. Refresh and try again.'), { status: 409 });
-    const tpl = (await client.query('SELECT template FROM tally_settings WHERE company_id=$1', [companyId])).rows[0]?.template || null;
-    const file = Buffer.from(await buildFile(pv.settings, tpl, pv.vouchers));
-    const name = `${pv.company} Tally ${from} to ${to} (batch ${batchId}).xlsx`.replace(/[^\w .()-]+/g, '_');
+    const asXml = (pv.settings.format || 'xml') === 'xml';
+    let file;
+    if (asXml) file = buildXml(pv.settings, pv.vouchers);
+    else {
+      const tpl = (await client.query('SELECT template FROM tally_settings WHERE company_id=$1', [companyId])).rows[0]?.template || null;
+      file = Buffer.from(await buildFile(pv.settings, tpl, pv.vouchers));
+    }
+    const name = `${pv.company} Tally vouchers ${from} to ${to} (batch ${batchId}).${asXml ? 'xml' : 'xlsx'}`.replace(/[^\w .()-]+/g, '_');
     await client.query('UPDATE tally_batches SET file=$2, file_name=$3 WHERE id=$1', [batchId, file, name]);
     await client.query('COMMIT');
     return { batchId, name, vouchers: pv.totals.vouchers, days: ids.length };
@@ -255,4 +358,4 @@ async function exportBatch(companyId, from, to, includeErrors) {
   }
 }
 
-module.exports = { FIELDS, DEFAULT_LEDGERS, guessField, readTemplate, getSettings, preview, buildFile, exportBatch };
+module.exports = { FIELDS, DEFAULT_LEDGERS, DEFAULT_GROUPS, TALLY_GROUPS, guessField, readTemplate, getSettings, preview, buildFile, buildXml, buildMastersXml, ledgerList, mastersFile, exportBatch };
