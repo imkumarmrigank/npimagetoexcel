@@ -462,6 +462,8 @@ async function openReview(id) {
   $('#rNotes').textContent = [n.stock_atg && `Stock ATG: ${n.stock_atg}`, n.stock_manual && `Stock manual: ${n.stock_manual}`, n.paytm12 && `PAYTM 12: ${fmt(n.paytm12)}`,
     n.unreadable?.length && `Hard to read: ${n.unreadable.join(', ')}`].filter(Boolean).join(' · ');
   renderLines();
+  clearTimeout(recheckTimer);
+  $('#unsavedNote').classList.add('hidden');
   renderComputed(e.computed);
   if (locked) document.querySelectorAll('#review .review-data input, #review .review-data select, #review .review-data button:not(#prevDay):not(#nextDay):not([onclick])').forEach((el) => { el.disabled = true; });
   if (!reviewDlg.open) reviewDlg.showModal();
@@ -520,6 +522,36 @@ function liveSums() {
   const i = sum('in'), o = sum('out');
   $('#liveSums').textContent = `Lines add up to: inflow ${fmt(i) || 0} · expenses ${fmt(o) || 0} · cash in hand ${fmt(i - o) || 0}`;
   liveCheck(i, o);
+  scheduleRecheck();
+}
+
+// Re-run the full checks on the unsaved figures shortly after typing stops, so "Why and how to
+// fix", the check list and the opening-cash warning all clear as soon as the figures are right.
+let recheckTimer = null;
+let recheckSeq = 0;
+function scheduleRecheck() {
+  clearTimeout(recheckTimer);
+  const e = state.entry;
+  if (!e || e.tally_batch_id) return;
+  recheckTimer = setTimeout(async () => {
+    const seq = ++recheckSeq;
+    const num = (v) => (v === '' ? null : Number(v));
+    try {
+      const r = await api(`/api/entries/${e.id}/check`, {
+        method: 'POST',
+        body: {
+          day: num($('#rDay').value), lines: e.lines,
+          printed: { ...(e.printed || {}), total_inflow: num($('#rTin').value), total_expense: num($('#rTex').value), cash_in_hand: num($('#rCash').value) },
+        },
+      });
+      if (seq !== recheckSeq || state.entry !== e) return; // a newer check or another day is showing
+      e.computed = r.computed;
+      renderComputed(r.computed);
+      const dirty = true;
+      $('#unsavedNote').classList.toggle('hidden', !dirty);
+      liveCheck(...['in', 'out'].map((side) => e.lines.filter((l) => l.side === side).reduce((s2, l) => s2 + (Number(l.amount) || 0), 0)));
+    } catch { /* checking is a convenience; saving still validates */ }
+  }, 450);
 }
 
 // Paint mismatched fields red as the user types, so they can see what to fix.

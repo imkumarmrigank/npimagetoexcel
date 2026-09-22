@@ -475,6 +475,24 @@ app.get('/api/entries/:id', wrap(async (req, res) => {
   const summary = await monthSummary(await getMonth(e.month_id));
   res.json({ ...e, computed: summary.entries.find((x) => x.id === e.id) });
 }));
+// Check figures that are still being typed (nothing is saved): the same checks as after saving,
+// so the form can clear red marks the moment the figures match the image.
+app.post('/api/entries/:id/check', wrap(async (req, res) => {
+  const r = await db.query('SELECT e.id, e.month_id, e.status, e.source, e.image_name, m.company_id FROM entries e JOIN months m ON m.id = e.month_id WHERE e.id=$1', [req.params.id]);
+  if (!r.rowCount) throw fail(404, 'Not found');
+  const cur = r.rows[0];
+  const month = await getMonth(cur.month_id);
+  const rules = await loadRules(cur.company_id);
+  const num = (v) => (v === '' || v === null || v === undefined ? null : Number(v));
+  const lines = classifyLines((req.body.lines || []).map((l, i) => ({
+    id: l.id || i + 1, side: l.side === 'out' ? 'out' : 'in', label: String(l.label || '').trim(),
+    unit: num(l.unit), rate: num(l.rate), amount: num(l.amount), col: l.col || null, manual: !!l.manual,
+  })), rules);
+  const entries = (await db.query('SELECT id, day, report_date, image_name, lines, printed, notes, status, source, tally_batch_id FROM entries WHERE month_id = $1', [cur.month_id])).rows
+    .map((e) => (e.id === cur.id ? { ...e, day: num(req.body.day), lines, printed: req.body.printed || {} } : e));
+  const computed = buildMonth(month, entries).entries.find((x) => x.id === cur.id);
+  res.json({ computed, lines });
+}));
 app.get('/api/entries/:id/image', wrap(async (req, res) => {
   const r = await db.query('SELECT image, image_mime FROM entries WHERE id=$1', [req.params.id]);
   if (!r.rowCount || !r.rows[0].image) throw fail(404, 'No image for this day');
