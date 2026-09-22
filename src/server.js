@@ -196,7 +196,15 @@ async function templateLines(month) {
 
 async function createEntry(month, day, file, replace = false) {
   const date = `${String(day).padStart(2, '0')}-${String(month.month).padStart(2, '0')}-${month.year}`;
-  const existing = (await db.query('SELECT id, source, tally_batch_id FROM entries WHERE month_id=$1 AND day=$2', [month.id, day])).rows[0];
+  const existing = (await db.query('SELECT id, source, tally_batch_id, image IS NOT NULL AS has_image FROM entries WHERE month_id=$1 AND day=$2', [month.id, day])).rows[0];
+  // A day typed in by hand gets the uploaded image attached; its figures are kept for checking.
+  if (existing && file && !existing.has_image) {
+    if (existing.tally_batch_id) throw fail(409, `${date} was already sent to Tally (batch #${existing.tally_batch_id}); unlock it in Tally Export before adding its image.`, { code: 'exported' });
+    await db.query(
+      "UPDATE entries SET image=$2, image_mime=$3, image_name=$4, image_hash=$5, source='image', status='review', updated_at=now() WHERE id=$1",
+      [existing.id, file.buffer, file.mimetype, file.originalname, file.hash]);
+    return { id: existing.id, attached: true };
+  }
   if (existing) {
     if (!replace) {
       throw fail(409, `Already uploaded for ${date}. Open that day, or choose Replace to swap its image.`,
@@ -221,7 +229,7 @@ app.post('/api/companies/:id/existing', wrap(async (req, res) => {
   for (const v of req.body.dates || []) {
     const { year, mon, day } = parseDate(v);
     const r = await db.query(
-      `SELECT e.id, e.month_id, e.source, e.image_name, e.status, e.tally_batch_id FROM entries e JOIN months m ON m.id = e.month_id
+      `SELECT e.id, e.month_id, e.source, e.image_name, e.status, e.tally_batch_id, e.image IS NOT NULL AS has_image FROM entries e JOIN months m ON m.id = e.month_id
        WHERE m.company_id=$1 AND m.year=$2 AND m.month=$3 AND e.day=$4`, [req.params.id, year, mon, day]);
     if (r.rowCount) found[v] = r.rows[0];
   }

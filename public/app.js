@@ -278,7 +278,9 @@ async function uploadFiles(files) {
       if (replace) fd.append('replace', '1');
       try {
         const r = await api(`/api/companies/${companyId}/upload`, { method: 'POST', body: fd });
-        st.innerHTML = badge('ok', r.replaced ? 'replaced' : 'saved') + ' type the figures';
+        st.innerHTML = r.attached
+          ? `${badge('ok', 'attached')} added to the figures typed for this date — check them against the image`
+          : badge('ok', r.replaced ? 'replaced' : 'saved') + ' type the figures';
         lastId = r.id; lastMonth = r.month_id; uploaded++;
       } catch (e) {
         st.innerHTML = `${badge('error', e.data?.code === 'duplicate_image' ? 'same image' : 'not saved')} ${esc(e.message)}`
@@ -296,6 +298,12 @@ async function uploadFiles(files) {
     $('#queue').prepend(li);
     const st = li.querySelector('.st');
     const ex = taken[date];
+    // A typed-in day without an image: the upload attaches to it (figures kept).
+    if (ex && !ex.has_image && !ex.tally_batch_id) {
+      st.innerHTML = `${badge('ok', 'typed day')} will be attached to the figures already typed for this date…`;
+      send(file, date, st, false);
+      return;
+    }
     if (ex) {
       const locked = !!ex.tally_batch_id;
       st.innerHTML = `${badge('warn', 'already uploaded')} ${date.split('-').reverse().join('-')} already has ${ex.source === 'manual' ? 'a typed entry' : 'an image'}${ex.status === 'verified' ? ' (verified)' : ''}.
