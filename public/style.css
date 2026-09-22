@@ -204,3 +204,4 @@ input.warn { background: var(--warn-bg); border-color: #e3b341; }
 .quick button.active { background: var(--brand); border-color: var(--brand); color: #fff; font-weight: 600; }
 .quick button.active::before { content: '✓ '; }
 .quick button:focus-visible, .fields select:focus-visible, .fields input:focus-visible { outline: 2px solid var(--brand); outline-offset: 1px; }
+.sheet td.cell-carried { background: #fff1f0; color: #b42318; }

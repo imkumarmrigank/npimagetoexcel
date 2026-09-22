@@ -233,7 +233,30 @@ function renderSummary() {
     }
     return bad;
   };
-  const rowHtml = (e, label) => { const bad = badCells(e); return `<tr data-id="${e.id}" class="${e.errors ? 'err' : ''}" title="${e.errors ? esc(e.checks.filter((c) => c.status === 'error').map((c) => c.label).join('; ')) : ''}">${COLS.map(([c, , k]) => `<td class="${bad.has(c) ? 'cell-bad' : ''}">${c === 'A' ? label : fmt(e.row[k])}</td>`).join('')}
+  // Balance vs report per day: where the difference starts/changes (cause) and where it is only carried.
+  const balanceGaps = new Map();
+  let prevGap = 0, from = null;
+  for (const e of s.entries.filter((x) => x.day).sort((a2, b2) => a2.day - b2.day)) {
+    if (e.row.CASH === null || e.row.CASH === undefined) continue;
+    const gap = Math.round((e.row.closing - Number(e.row.CASH)) * 100) / 100;
+    const step = Math.round((gap - prevGap) * 100) / 100;
+    const cause = Math.abs(step) > 1;
+    if (cause) from = e.day;
+    balanceGaps.set(e.id, { gap, step, cause, prevGap, from });
+    prevGap = gap;
+  }
+  const rowHtml = (e, label) => { const bad = badCells(e); return `<tr data-id="${e.id}" class="${e.errors ? 'err' : ''}" title="${e.errors ? esc(e.checks.filter((c) => c.status === 'error').map((c) => c.label).join('; ')) : ''}">${COLS.map(([c, , k]) => {
+      // Balance (worked out day by day, as in the Excel) vs the report's closing balance. Strong red
+      // where the difference starts or changes; light red where it is only carried from an earlier day.
+      const g = balanceGaps.get(e.id);
+      if (c === 'Y' && g && Math.abs(g.gap) > 1) {
+        const tip = g.cause
+          ? `Balance ${fmt(e.row.closing)} ≠ closing balance on the report ${fmt(e.row.CASH)} (difference ${fmt(g.gap)}). The difference ${g.prevGap ? `changes by ${fmt(g.step)} on this day` : 'starts on this day'} — fix this day.`
+          : `Balance ${fmt(e.row.closing)} ≠ report ${fmt(e.row.CASH)} (difference ${fmt(g.gap)}), carried forward from day ${g.from}. Nothing new on this day.`;
+        return `<td class="${g.cause ? 'cell-bad' : 'cell-carried'}" title="${esc(tip)}">${fmt(e.row[k])}</td>`;
+      }
+      return `<td class="${bad.has(c) ? 'cell-bad' : ''}">${c === 'A' ? label : fmt(e.row[k])}</td>`;
+    }).join('')}
     <td class="status">${e.source === 'manual' ? badge('skip', 'manual') : ''} ${badge(e.status, e.status === 'verified' ? 'verified' : 'review')} ${e.errors ? badge('error', `${e.errors} mismatch`) : ''} ${e.warnings ? badge('warn', `${e.warnings} warn`) : ''}</td></tr>`; };
   for (let d = 1; d <= s.daysInMonth; d++) {
     const list = byDay.get(d);
