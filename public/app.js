@@ -195,7 +195,7 @@ $('#monthSelect').onchange = (e) => { state.monthId = Number(e.target.value); lo
 // ---------- dashboard ----------
 const badge = (s, text) => `<span class="badge b-${s}">${esc(text || s)}</span>`;
 const checkLi = (c) => `<li>${badge(c.status)}<div><div>${esc(c.label)}</div><div class="d">${
-  c.detail ? esc(c.detail) : `Image ${fmt(c.expected) || '0'} · Calculated ${fmt(c.actual) || '0'} · Difference ${fmt(c.diff) || '0'}`}</div></div></li>`;
+  c.detail ? esc(c.detail) : `On the report ${fmt(c.expected) || '0'} · Worked out from the rows ${fmt(c.actual) || '0'} · Difference ${fmt(Math.abs(c.diff)) || '0'}`}</div></div></li>`;
 
 const COLS = [
   ['A', 'Date'], ['B', 'OB', 'openingUsed'], ['C', 'HSD', 'HSD', 'in'], ['D', 'Rate', 'HSD_RATE', 'in'], ['E', 'Amt', 'HSD_AMT', 'in'],
@@ -404,6 +404,16 @@ function closingClues(c, e) {
   return [];
 }
 
+// If the report's own printed totals give its closing balance, the gap is between the report's
+// totals and its listed rows (e.g. a payment counted in the total but not written as a row).
+function reportTotalsNote(e) {
+  const p = e.printed || {};
+  const tin = parseAmount($('#rTin')?.value ?? p.total_inflow), tex = parseAmount($('#rTex')?.value ?? p.total_expense), cash = parseAmount($('#rCash')?.value ?? p.cash_in_hand);
+  if ([tin, tex, cash].some((v) => v === null || Number.isNaN(v))) return '';
+  if (Math.abs(tin - tex - cash) <= 1.5) return ` The report's own totals agree with its closing balance (${fmt(tin)} − ${fmt(tex)} = ${fmt(cash)}), so the difference is between the report's totals and the rows listed on it.`;
+  return ` Note: on the report, total inflow − total expenses (${fmt(tin)} − ${fmt(tex)} = ${fmt(tin - tex)}) is not its closing balance either — the report itself doesn't add up.`;
+}
+
 function explain(c, e) {
   const d = Math.abs(c.diff ?? 0);
   const side = (s) => e.lines.filter((l) => l.side === s);
@@ -424,7 +434,7 @@ function explain(c, e) {
       };
     case 'cash':
       return {
-        why: `Inflow − expenses from the rows gives ${fmt(c.actual)}, but the report's closing balance (cash in hand) is ${fmt(c.expected)} (difference ${fmt(d)}).`,
+        why: `${fmt(c.actual)} is not on the image — it is worked out here: total of the inflow rows minus total of the expense rows. The report's closing balance (cash in hand) is ${fmt(c.expected)}, so they are ${fmt(d)} apart.${reportTotalsNote(e)}`,
         fix: e.computed?.checks.some((x) => (x.id === 'inflow' || x.id === 'expense') && x.status === 'error')
           ? 'This follows from the inflow/expense mismatch above — fix that first and this usually clears.'
           : 'The rows balance but the closing balance does not: check “Closing balance (cash in hand)” against the report, or the cash actually counted at the end of the day. The next day’s opening cash should match it.',
@@ -559,7 +569,7 @@ document.querySelectorAll('[data-add]').forEach((b) => b.onclick = () => {
 function liveSums() {
   const sum = (side) => state.entry.lines.filter((l) => l.side === side).reduce((s, l) => s + (Number(l.amount) || 0), 0);
   const i = sum('in'), o = sum('out');
-  $('#liveSums').textContent = `Lines add up to: inflow ${fmt(i) || 0} · expenses ${fmt(o) || 0} · closing balance ${fmt(i - o) || 0}`;
+  $('#liveSums').textContent = `Worked out from the rows below: total inflow ${fmt(i) || 0} · total expenses ${fmt(o) || 0} · closing balance (inflow − expenses) ${fmt(i - o) || 0}`;
   liveCheck(i, o);
   scheduleRecheck();
 }
@@ -616,8 +626,10 @@ function liveCheck(sumIn, sumOut) {
     if (Math.abs(diff) <= TOL) { hint(hintId, ''); return; }
     $(id).classList.add('bad');
     if (side) amountInputs(side).forEach((el) => el.classList.add('bad-soft'));
-    hint(hintId, `Lines give ${fmt(calc) || '0.00'} (off by ${fmt(diff)})`);
-    problems.push(`${label}: image ${fmt(printed)}, lines ${fmt(calc) || '0.00'}, difference ${fmt(diff)}`);
+    // The worked-out figure is not on the image: it is the rows in this form added up.
+    const how = side === 'in' ? 'the inflow rows add up to' : side === 'out' ? 'the expense rows add up to' : 'inflow rows − expense rows give';
+    hint(hintId, `On the report ${fmt(printed)}, but ${how} ${fmt(calc) || '0.00'} (off by ${fmt(Math.abs(diff))})`);
+    problems.push(`${label}: the report says ${fmt(printed)}; ${how} ${fmt(calc) || '0.00'} (worked out here, not on the image) — difference ${fmt(Math.abs(diff))}`);
   };
   cmp('#rTin', '#hTin', val('#rTin'), sumIn, 'Total inflow', 'in');
   cmp('#rTex', '#hTex', val('#rTex'), sumOut, 'Total expenses', 'out');
